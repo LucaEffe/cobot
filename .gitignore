@@ -12,6 +12,7 @@ install/
 log/
 build/
 data/
+core
 
 # Ignore generated docs
 *.dox
