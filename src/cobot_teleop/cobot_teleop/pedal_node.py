@@ -3,6 +3,8 @@ import json
 import signal
 import threading
 import subprocess
+import evdev
+import time
 from datetime import datetime
 
 import rclpy
@@ -23,6 +25,8 @@ INIT_JOINTS = {"joint_0": 0.0, "joint_1": 0.0, "joint_2": 0.0, "joint_3": 0.0,
                "joint_4": 0.0, "joint_5": 0.0, "joint_6": 0.0}
 
 DATA_ROOT = "/workspace/cobot_recordings"
+
+PEDAL_DEVICE = "/dev/input/event27"
 
 # which gripper pedal 2 actuates: finger gripper (visible in sim).
 # to use the vacuum instead: GRIPPER_GROUP="vacuum_gripper_group",
@@ -197,6 +201,7 @@ def main():
 
     # wait for joint states, then set up MoveIt
     wait_for_joint_states(recorder.get_logger())
+    time.sleep(2.0)   # give the sim/controllers a moment before MoveIt configures
     moveit_config = generate_moveit_config()
     cobot = MoveItPy(node_name="recorder_moveit", config_dict=moveit_config)
     recorder.cobot = cobot
@@ -216,6 +221,24 @@ def main():
         arm.set_goal_state(configuration_name="init")
         plan_and_execute(cobot, arm, recorder.get_logger(), sleep_time=3.0)
         recorder.get_logger().info(">> Done.")
+
+    def pedal_loop():
+        try:
+            dev = evdev.InputDevice(PEDAL_DEVICE)
+            recorder.get_logger().info(f"Pedal ready: {dev.name}")
+        except Exception as e:
+            recorder.get_logger().warn(f"Pedal not available ({e}) - keyboard only.")
+            return
+        for event in dev.read_loop():
+            if event.type == evdev.ecodes.EV_KEY and event.value == 1:
+                if event.code == evdev.ecodes.KEY_F13:
+                    recorder.save_waypoint("waypoint")
+                elif event.code == evdev.ecodes.KEY_F14:
+                    recorder.toggle_gripper()
+                elif event.code == evdev.ecodes.KEY_F15:
+                    finish_run()
+
+    threading.Thread(target=pedal_loop, daemon=True).start()
 
     recorder.get_logger().info(
         "Keys:  [r]=start   [1]=waypoint   [2]=gripper(+wp)   "
