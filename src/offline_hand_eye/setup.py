@@ -17,7 +17,7 @@ setup(
     maintainer_email='thao.dang@hs-esslingen.de',
     description='A ROS2 package for offline hand-eye calibration, including data recording and calibration publishing tools.',
     license='BSD-3-Clause',
-    tests_require=['pytest'],
+    extras_require={'test': ['pytest']},
     entry_points={
         'console_scripts': [
             'record_calib_data = offline_hand_eye.record_calib_data:main',

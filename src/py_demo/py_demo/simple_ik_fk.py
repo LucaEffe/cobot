@@ -37,7 +37,7 @@ def main():
     rclpy.init()
     logger = get_logger("moveit_py.pose_goal")
     # the Python MoveIt2 API requires configuration
-    moveit_config = generate_moveit_config()
+    moveit_config = generate_moveit_config(use_real=True)
     # wait until the joint states are published
     wait_for_joint_states(logger)
 

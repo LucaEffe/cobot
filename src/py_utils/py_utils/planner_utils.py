@@ -79,7 +79,7 @@ def wait_for_joint_states(logger):
     node.destroy_node()
 
 
-def generate_moveit_config() -> dict:
+def generate_moveit_config(use_real=False) -> dict:
     """Generates a MoveIt2 configuration using the MoveItConfigsBuilder.
 
     Unlike the C++ MoveGroup API, the Python MoveIt2 API requires configuration.
@@ -112,7 +112,8 @@ def generate_moveit_config() -> dict:
         )
         .trajectory_execution(
             file_path=get_package_share_directory("cobot_moveit_config")
-            + "/config/moveit_controllers.yaml"
+            + "/config/"
+            + ("moveit_custom_controllers.yaml" if use_real else "moveit_controllers.yaml")
         )
         # apparently this file is read based on convention
         # in <robot_name>_moveit_config

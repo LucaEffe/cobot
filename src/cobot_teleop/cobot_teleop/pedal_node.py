@@ -202,7 +202,7 @@ def main():
     # wait for joint states, then set up MoveIt
     wait_for_joint_states(recorder.get_logger())
     time.sleep(2.0)   # give the sim/controllers a moment before MoveIt configures
-    moveit_config = generate_moveit_config()
+    moveit_config = generate_moveit_config(use_real=True)
     cobot = MoveItPy(node_name="recorder_moveit", config_dict=moveit_config)
     recorder.cobot = cobot
     arm = cobot.get_planning_component("arm_group")

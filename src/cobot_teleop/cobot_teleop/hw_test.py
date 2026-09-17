@@ -19,7 +19,7 @@ logger = get_logger("hw_test")
 def main():
     rclpy.init()
 
-    moveit_config = generate_moveit_config()
+    moveit_config = generate_moveit_config(use_real=True)
     cobot = MoveItPy(node_name="hw_test_moveit", config_dict=moveit_config)
 
     time.sleep(8.0)
