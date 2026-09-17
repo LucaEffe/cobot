@@ -16,13 +16,17 @@ from py_utils.planner_utils import (
     plan_and_execute, wait_for_joint_states, generate_moveit_config,
 )
 from moveit.planning import MoveItPy
+from moveit.core.robot_state import RobotState
+from moveit.core.kinematic_constraints import construct_joint_constraint
 
 # --- config ---
 ARM_JOINTS = ["joint_0", "joint_1", "joint_2", "joint_3",
               "joint_4", "joint_5", "joint_6"]
 
-INIT_JOINTS = {"joint_0": 0.0, "joint_1": 0.0, "joint_2": 0.0, "joint_3": 0.0,
+INIT_JOINTS = {"joint_0": 0.3, "joint_1": 0.0, "joint_2": 0.0, "joint_3": 0.0,
                "joint_4": 0.0, "joint_5": 0.0, "joint_6": 0.0}
+
+FIXED_JOINT0 = 0.3   # joint_0 (Hoehe) konstant halten
 
 DATA_ROOT = "/workspace/cobot_recordings"
 
@@ -102,6 +106,8 @@ class Recorder(Node):
         all_pos = dict(zip(msg.name, msg.position))
         arm = {j: round(all_pos.get(j), 6) for j in ARM_JOINTS}
 
+        arm["joint_0"] = FIXED_JOINT0
+
         snapshot = {
             "t": t,
             "event": event,                               # waypoint / grip / release / pre_home / init
@@ -168,22 +174,28 @@ class Recorder(Node):
         )
         self.recording = False
 
-    # ---------- gripper ----------
-    def _move_group(self, group_name, target):
-        if self.cobot is None:
-            self.get_logger().warn("MoveIt not ready.")
-            return
-        comp = self.cobot.get_planning_component(group_name)
-        comp.set_start_state_to_current_state()
-        comp.set_goal_state(configuration_name=target)
-        plan_and_execute(self.cobot, comp, self.get_logger(), sleep_time=1.0)
+    # ---------- gripper (standalone OPC-UA, kein MoveIt) ----------
+    def _run_hw(self, *args):
+        cmd = ["ros2", "run", "cobot_hardware"] + list(args)
+        try:
+            subprocess.run(cmd, check=False, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=30)
+        except Exception as e:
+            self.get_logger().warn(f"HW cmd {args} failed: {e}")
 
     def toggle_gripper(self):
         self.gripper_closed = not self.gripper_closed
-        target = CLOSE_STATE if self.gripper_closed else OPEN_STATE
-        self.get_logger().info(f"Gripper -> {target}")
-        self._move_group(GRIPPER_GROUP, target)
-        # capture the gripper change as a waypoint
+        # Greifer braucht Balancer AUS (Controller aktiv), sonst haengt es
+        self._run_hw("balancer", "off")
+        if self.gripper_closed:
+            self.get_logger().info("Gripper -> close")
+            self._run_hw("gripper_close")
+        else:
+            self.get_logger().info("Gripper -> open")
+            self._run_hw("gripper_open")
+        # Greifer-Kommando macht den Arm steif -> Handfuehrung wiederherstellen
+        self._run_hw("balancer", "on")
         self.save_waypoint("grip" if self.gripper_closed else "release")
 
     def close(self):
@@ -214,11 +226,15 @@ def main():
         recorder.finish_recording()
 
     def move_to_init():
-        # separate, deliberate command (key 'i'): actually drive the arm to init
-        # TODO (real robot): switch from hand-guiding to active controller BEFORE this
         recorder.get_logger().info(">> Moving to init ...")
+        rs = RobotState(cobot.get_robot_model())
+        rs.joint_positions = INIT_JOINTS
+        jc = construct_joint_constraint(
+            robot_state=rs,
+            joint_model_group=cobot.get_robot_model().get_joint_model_group("arm_group"),
+        )
         arm.set_start_state_to_current_state()
-        arm.set_goal_state(configuration_name="init")
+        arm.set_goal_state(motion_plan_constraints=[jc])
         plan_and_execute(cobot, arm, recorder.get_logger(), sleep_time=3.0)
         recorder.get_logger().info(">> Done.")
 
