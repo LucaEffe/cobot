@@ -25,7 +25,8 @@
         "--security-opt",
         "seccomp=unconfined",
         "-v",
-        "/mnt/data/cobot:/workspace/data"
+        "/mnt/data/cobot:/workspace/data",
+        "--device=/dev/input/event27"
     ],
     "postCreateCommand": "cat .devcontainer/bashrc >> ~/.bashrc"
 }

@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'pedal_node = cobot_teleop.pedal_node:main',
             'replay_node = cobot_teleop.replay_node:main',
+            'hw_test = cobot_teleop.hw_test:main',
         ],
     },
 )
