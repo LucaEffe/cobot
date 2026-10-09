@@ -121,6 +121,12 @@ def generate_moveit_config(use_real=False) -> dict:
         #    file_path=get_package_share_directory("cobot_moveit_config")
         #    + "/config/ompl_planning.yaml"
         # )
+
+        .planning_pipelines(
+            pipelines=["ompl", "chomp", "stomp"],
+            default_planning_pipeline="ompl",
+        )
+        
         .pilz_cartesian_limits(
             file_path=get_package_share_directory("py_demo")
             + "/config/pilz_cartesian_limits.yaml"

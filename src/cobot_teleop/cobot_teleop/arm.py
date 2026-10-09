@@ -24,9 +24,8 @@ def plan_and_execute(cobot, component, label: str, logger, plan_params=None) -> 
     """
     Plan the currently configured goal of `component` and execute it.
 
-    Shared by the arm and the (sim) gripper. `plan_params` optionally sets
-    velocity/acceleration scaling (see ArmExecutor). Returns True only when
-    both planning and execution succeed.
+    `plan_params` optionally selects the planner / scaling (see ArmExecutor).
+    Returns True only when both planning and execution succeed.
     """
 
     logger.info(f"Planning: {label}")
@@ -63,39 +62,48 @@ def plan_and_execute(cobot, component, label: str, logger, plan_params=None) -> 
 class ArmExecutor:
     """Moves the arm to joint configurations via MoveIt.
 
-    `speed` (0..1) scales velocity and acceleration for every arm motion --
-    useful to slow the real robot down for first tests. If the scaling
-    cannot be applied (e.g. wrong planner config name), it falls back to
-    full speed with a warning instead of failing.
+    pipeline / planner_id choose the motion planner:
+      OMPL:  pipeline="ompl",
+             planner_id="RRTConnectkConfigDefault" | "RRTkConfigDefault"
+                        | "RRTstarkConfigDefault" | "PRMkConfigDefault"
+      Pilz:  pipeline="pilz_industrial_motion_planner",
+             planner_id="LIN" | "PTP" | "CIRC"   (pipeline must be loaded)
+
+    If the params cannot be built (e.g. pipeline not loaded), it falls back
+    to the default planner with a warning instead of failing.
     """
 
     def __init__(self, cobot, logger, speed: float = 1.0,
-                 planner_config: str = "ompl_rrtc"):
+                 planner_config: str = "ompl_rrtc",
+                 pipeline: str = "chomp",
+                 planner_id: str = ""):
         self.cobot = cobot
         self.logger = logger
         self.robot_model = cobot.get_robot_model()
         self.arm = cobot.get_planning_component(ARM_GROUP)
         self.speed = max(0.0, min(1.0, speed))
         self.planner_config = planner_config
+        self.pipeline = pipeline
+        self.planner_id = planner_id
         self._plan_params = self._build_plan_params()
 
     def _build_plan_params(self):
-        if self.speed >= 1.0:
-            return None
         try:
             from moveit.planning import PlanRequestParameters
             params = PlanRequestParameters(self.cobot, self.planner_config)
-            params.max_velocity_scaling_factor = self.speed
-            params.max_acceleration_scaling_factor = self.speed
+            params.planning_pipeline = self.pipeline
+            params.planner_id = self.planner_id
+            if self.speed < 1.0:
+                params.max_velocity_scaling_factor = self.speed
+                params.max_acceleration_scaling_factor = self.speed
             self.logger.info(
-                f"Arm speed scaling active: {self.speed} "
-                f"(config '{self.planner_config}')."
+                f"Planner: pipeline='{self.pipeline}' id='{self.planner_id}' "
+                f"speed={self.speed}"
             )
             return params
         except Exception as e:  # noqa: BLE001
             self.logger.warn(
-                f"Could not apply speed scaling ({e}); running full speed. "
-                f"Check --planner-config."
+                f"Could not build plan params ({e}); default planner."
             )
             return None
 
@@ -106,7 +114,6 @@ class ArmExecutor:
         }
         goal_state.update()
 
-        # Always start a new segment from the current state.
         self.arm.set_start_state_to_current_state()
         self.arm.set_goal_state(robot_state=goal_state)
 
