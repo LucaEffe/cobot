@@ -29,7 +29,7 @@ GRIPPER_GROUP = "gripper_group"
 # The canonical home pose. Every recording starts here and replay only
 # runs when the robot is at this pose (safety gate).
 INIT_JOINTS = {
-    "joint_0": 0.7,
+    "joint_0": 0.3,
     "joint_1": 0.0,
     "joint_2": 0.0,
     "joint_3": 0.0,

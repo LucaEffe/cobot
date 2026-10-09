@@ -172,6 +172,11 @@ def main():
             "monitored_planning_scene_topic": "/moveit_cpp/monitored_planning_scene",
             "wait_for_initial_state_timeout": 10.0,
         }
+
+        #Start-Toleranz lockern
+        te = moveit_config.setdefault("trajectory_execution", {})
+        te["allowed_start_tolerance"] = 0.0
+
         cobot = MoveItPy(node_name="replay_moveit", config_dict=moveit_config)
         logger.info("MoveIt ready. Waiting for controller discovery ...")
         time.sleep(3.0)

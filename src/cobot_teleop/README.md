@@ -88,7 +88,7 @@ sudo chmod a+r /dev/input/event27
 > The pedal must be plugged in **before** the container starts — USB hotplug
 > does not reach a running container. If `/dev/input/event27` is missing inside
 > the container, plug the pedal in and restart the container
-> (`docker restart <id>`).
+> (`docker restart <id>`). Check ID with (`docker ps`).
 
 ---
 
@@ -96,7 +96,7 @@ sudo chmod a+r /dev/input/event27
 
 ```bash
 cd /workspace
-colcon build --packages-select cobot_teleop --symlink-install
+colcon build --packages-select cobot_teleop --symlink-install --merge-install
 source install/setup.bash
 ```
 
