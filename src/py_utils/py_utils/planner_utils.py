@@ -123,7 +123,7 @@ def generate_moveit_config(use_real=False) -> dict:
         # )
 
         .planning_pipelines(
-            pipelines=["ompl", "chomp", "stomp"],
+            pipelines=["ompl", "chomp", "stomp", "pilz_industrial_motion_planner"],
             default_planning_pipeline="ompl",
         )
         

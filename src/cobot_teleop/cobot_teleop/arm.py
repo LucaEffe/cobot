@@ -62,12 +62,15 @@ def plan_and_execute(cobot, component, label: str, logger, plan_params=None) -> 
 class ArmExecutor:
     """Moves the arm to joint configurations via MoveIt.
 
-    pipeline / planner_id choose the motion planner:
-      OMPL:  pipeline="ompl",
-             planner_id="RRTConnectkConfigDefault" | "RRTkConfigDefault"
-                        | "RRTstarkConfigDefault" | "PRMkConfigDefault"
-      Pilz:  pipeline="pilz_industrial_motion_planner",
-             planner_id="LIN" | "PTP" | "CIRC"   (pipeline must be loaded)
+    pipeline / planner_id choose the motion planner (the pipeline must be
+    loaded in the MoveIt config):
+      OMPL:   pipeline="ompl",
+              planner_id="RRTConnectkConfigDefault" | "RRTkConfigDefault"
+                         | "RRTstarkConfigDefault" | "PRMkConfigDefault"
+      CHOMP:  pipeline="chomp"
+      STOMP:  pipeline="stomp"
+      Pilz:   pipeline="pilz_industrial_motion_planner",
+              planner_id="PTP" | "LIN" | "CIRC"
 
     If the params cannot be built (e.g. pipeline not loaded), it falls back
     to the default planner with a warning instead of failing.
@@ -75,7 +78,7 @@ class ArmExecutor:
 
     def __init__(self, cobot, logger, speed: float = 1.0,
                  planner_config: str = "ompl_rrtc",
-                 pipeline: str = "chomp",
+                 pipeline: str = "stomp",
                  planner_id: str = ""):
         self.cobot = cobot
         self.logger = logger
@@ -86,6 +89,7 @@ class ArmExecutor:
         self.pipeline = pipeline
         self.planner_id = planner_id
         self._plan_params = self._build_plan_params()
+        self._last_goal: Optional[Dict[str, float]] = None
 
     def _build_plan_params(self):
         try:
@@ -108,18 +112,32 @@ class ArmExecutor:
             return None
 
     def move_to(self, joints: Dict[str, float], label: str = "arm") -> bool:
+        goal = {j: float(joints[j]) for j in ARM_JOINTS}
+
+        # Skip planning when the goal equals the last reached pose, e.g. for
+        # consecutive waypoints that only toggle the gripper. Such a segment
+        # is a zero-length motion: CHOMP still lays out its fixed, noisy path
+        # and the near-antiparallel direction vectors trip the time-
+        # parameterization (TOTG) "180 deg turn" check; the other planners
+        # just waste a plan on a non-move.
+        if self._last_goal is not None and all(
+            abs(self._last_goal[j] - goal[j]) <= 1e-3 for j in ARM_JOINTS
+        ):
+            return True
+
         goal_state = RobotState(self.robot_model)
-        goal_state.joint_positions = {
-            j: float(joints[j]) for j in ARM_JOINTS
-        }
+        goal_state.joint_positions = goal
         goal_state.update()
 
         self.arm.set_start_state_to_current_state()
         self.arm.set_goal_state(robot_state=goal_state)
 
-        return plan_and_execute(
+        ok = plan_and_execute(
             self.cobot, self.arm, label, self.logger, self._plan_params
         )
+        if ok:
+            self._last_goal = goal
+        return ok
 
     def move_to_init(self) -> bool:
         return self.move_to(INIT_JOINTS, label="move to init")
