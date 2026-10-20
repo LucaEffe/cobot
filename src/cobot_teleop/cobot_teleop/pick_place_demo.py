@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 """
-Minimal scripted pick-and-place demo (NO MoveIt Task Constructor).
+Scripted pick-and-place on the worktable (NO MoveIt Task Constructor).
 
-Three interfaces:
-  1. Planning Scene   -> spawn a cube as a collision object (RViz draws it).
-  2. Motion Planning  -> move the tool link (gripper_tcp) to Cartesian poses.
-  3. Attach / Detach   -> carry the cube with the gripper.
+You set WHERE the cube is and WHERE it goes, in world coordinates. MoveIt
+does the rest (inverse kinematics + planning). No joint angles to touch.
 
-Robot-specific:
-  * The arm drives ONCE to the config init pose (joint_0 = 0.3), then joint_0
-    is LOCKED via a path constraint -- the height axis never moves again.
-  * There is no physics here. "Grasping" is modelled by (a) allowing the
-    gripper's collision shapes to overlap the cube and (b) attaching the cube
-    to the tool link. The cube stays visible the whole time.
+  * joint_0 (height axis) is driven ONCE to 0.3 and then kept ~fixed, like
+    teach/replay.
+  * The gripper approaches with a fixed orientation (GRASP_QUAT) -- that is
+    just "how the gripper is turned", MoveIt figures out the joints for it.
+  * No physics: grasping = allow gripper/cube overlap + attach. Cube visible.
 
 Run (sim + RViz up, workspace sourced):
     python3 src/cobot_teleop/cobot_teleop/pick_place_demo.py
@@ -41,6 +38,21 @@ from std_msgs.msg import ColorRGBA
 from py_utils.planner_utils import wait_for_joint_states, generate_moveit_config
 
 
+# ===========================================================================
+# THE ONLY THINGS YOU CHANGE: where the cube is, and where it goes.
+# World coordinates in metres. Change x and y; keep z about the table height.
+# ===========================================================================
+
+CUBE_POS = (0.4, -0.285, 0.773)   # where the cube lies on the table
+DROP_POS = (0.534, -0.130, 0.773)   # where to put it down (fixed spot)
+
+# How the gripper is turned when it grasps (quaternion x, y, z, w). This is an
+# orientation, not a joint angle -- MoveIt solves the joints for it. Leave it.
+GRASP_QUAT = (0.673105, 0.738588, 0.031103, -0.021228)
+
+# ===========================================================================
+
+
 # --- robot constants (match config.py / the SRDF) -------------------------
 
 ARM_GROUP = "arm_group"
@@ -52,65 +64,31 @@ HEIGHT_JOINT = "joint_0"
 GRIPPER_OPEN_STATE = "open"
 GRIPPER_CLOSE_STATE = "close"
 
-# The whole gripper head that may touch the cube -- INCLUDING the vacuum
-# links, which stick out and otherwise collide with the cube.
 GRIPPER_TOUCH_LINKS = [
     "finger1", "finger2", "gripper_tcp", "segment7",
     "vacuum_gripper_up", "vacuum_gripper_down",
 ]
+# The cube rests on the table (the workbench mesh on these links).
+TABLE_TOUCH_LINKS = ["lin_axis", "lin_axis_carriage"]
+CUBE_ALLOWED_LINKS = GRIPPER_TOUCH_LINKS + TABLE_TOUCH_LINKS
 
+# The home pose (= config.py INIT_JOINTS). Reached once; joint_0 then ~fixed.
 INIT_JOINTS = {
-    "joint_0": 0.3,
-    "joint_1": 0.0,
-    "joint_2": 0.0,
-    "joint_3": 0.0,
-    "joint_4": 0.0,
-    "joint_5": 0.0,
-    "joint_6": 0.0,
+    "joint_0": 0.3, "joint_1": 0.0, "joint_2": 0.0, "joint_3": 0.0,
+    "joint_4": 0.0, "joint_5": 0.0, "joint_6": 0.0,
 }
 
 CUBE_ID = "cube"
-
-# --- demo geometry (metres), relative to the tool pose at init ------------
-
 CUBE_SIZE = 0.04
-PICK_DROP = 0.10
-LIFT = 0.10
-PLACE_SHIFT = (0.0, 0.15, 0.0)
 
-
-# ---------------------------------------------------------------------------
-# rotation matrix -> quaternion (x, y, z, w)
-# ---------------------------------------------------------------------------
-
-def rotmat_to_quat(R):
-    m00, m11, m22 = R[0, 0], R[1, 1], R[2, 2]
-    tr = m00 + m11 + m22
-    if tr > 0.0:
-        s = 0.5 / np.sqrt(tr + 1.0)
-        w = 0.25 / s
-        x = (R[2, 1] - R[1, 2]) * s
-        y = (R[0, 2] - R[2, 0]) * s
-        z = (R[1, 0] - R[0, 1]) * s
-    elif m00 >= m11 and m00 >= m22:
-        s = 2.0 * np.sqrt(1.0 + m00 - m11 - m22)
-        w = (R[2, 1] - R[1, 2]) / s
-        x = 0.25 * s
-        y = (R[0, 1] + R[1, 0]) / s
-        z = (R[0, 2] + R[2, 0]) / s
-    elif m11 >= m22:
-        s = 2.0 * np.sqrt(1.0 + m11 - m00 - m22)
-        w = (R[0, 2] - R[2, 0]) / s
-        x = (R[0, 1] + R[1, 0]) / s
-        y = 0.25 * s
-        z = (R[1, 2] + R[2, 1]) / s
-    else:
-        s = 2.0 * np.sqrt(1.0 + m22 - m00 - m11)
-        w = (R[1, 0] - R[0, 1]) / s
-        x = (R[0, 2] + R[2, 0]) / s
-        y = (R[1, 2] + R[2, 1]) / s
-        z = 0.25 * s
-    return float(x), float(y), float(z), float(w)
+# Tool point sits this far above the cube centre (so the cube rests on the
+# table while the gripper grasps from above). Also the grasp offset.
+CUBE_DROP = 0.05
+# Vertical clearance for lifting/lowering around pick and drop.
+RETREAT_LIFT = 0.10
+# How much joint_0 may drift (small = ~fixed, but too small makes the
+# constrained goal sampler fail). 0.01 keeps it ~fixed yet plannable.
+JOINT0_TOL = 0.01
 
 
 # ---------------------------------------------------------------------------
@@ -169,26 +147,9 @@ def color_for(obj_id, rgba):
 
 
 def _allow_cube_touch(scene):
-    """Tell MoveIt the cube may overlap the gripper head (no physics here)."""
     acm = scene.allowed_collision_matrix
-    for link in GRIPPER_TOUCH_LINKS:
+    for link in CUBE_ALLOWED_LINKS:
         acm.set_entry(CUBE_ID, link, True)
-
-
-def print_scene_objects(cobot, logger):
-    psm = cobot.get_planning_scene_monitor()
-    with psm.read_only() as scene:
-        objs = scene.planning_scene_message.world.collision_objects
-    if not objs:
-        logger.info("World collision objects: none.")
-        return
-    logger.info("World collision objects:")
-    for o in objs:
-        if o.primitive_poses:
-            p = o.primitive_poses[0].position
-            logger.info(f"  '{o.id}'  pos=({p.x:.3f}, {p.y:.3f}, {p.z:.3f})")
-        else:
-            logger.info(f"  '{o.id}'  (mesh / no primitive pose)")
 
 
 def spawn_cube(cobot, logger, cube_pos):
@@ -198,7 +159,19 @@ def spawn_cube(cobot, logger, cube_pos):
         scene.apply_collision_object(cube, color_for(CUBE_ID, (0.9, 0.1, 0.1, 1.0)))
         _allow_cube_touch(scene)
         scene.current_state.update()
-    logger.info("Spawned cube and allowed gripper-head contact.")
+    logger.info(f"Spawned cube at {np.round(cube_pos, 3).tolist()}.")
+
+
+def remove_cube_from_world(cobot, logger):
+    psm = cobot.get_planning_scene_monitor()
+    with psm.read_write() as scene:
+        obj = CollisionObject()
+        obj.id = CUBE_ID
+        obj.header.frame_id = BASE_FRAME
+        obj.operation = CollisionObject.REMOVE
+        scene.apply_collision_object(obj)
+        scene.current_state.update()
+    logger.info("Reset: cube removed from scene.")
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +179,6 @@ def spawn_cube(cobot, logger, cube_pos):
 # ---------------------------------------------------------------------------
 
 def attach_cube(cobot, logger):
-    """Attach the existing world cube to the tool link (it stays visible)."""
     psm = cobot.get_planning_scene_monitor()
     with psm.read_write() as scene:
         aco = AttachedCollisionObject()
@@ -215,6 +187,7 @@ def attach_cube(cobot, logger):
         aco.object.operation = CollisionObject.ADD
         aco.touch_links = GRIPPER_TOUCH_LINKS
         scene.process_attached_collision_object(aco)
+        _allow_cube_touch(scene)   # re-apply (attach resets the ACM)
         scene.current_state.update()
     logger.info("Cube attached to gripper.")
 
@@ -227,7 +200,7 @@ def detach_cube(cobot, logger):
         aco.object.id = CUBE_ID
         aco.object.operation = CollisionObject.REMOVE
         scene.process_attached_collision_object(aco)
-        _allow_cube_touch(scene)   # re-allow now that it is a world object again
+        _allow_cube_touch(scene)
         scene.current_state.update()
     logger.info("Cube detached (stays at the place location).")
 
@@ -251,12 +224,12 @@ def lock_height_joint(arm, logger, value):
     jc = JointConstraint()
     jc.joint_name = HEIGHT_JOINT
     jc.position = float(value)
-    jc.tolerance_above = 0.001
-    jc.tolerance_below = 0.001
+    jc.tolerance_above = JOINT0_TOL
+    jc.tolerance_below = JOINT0_TOL
     jc.weight = 1.0
     c.joint_constraints.append(jc)
     arm.set_path_constraints(c)
-    logger.info(f"Locked {HEIGHT_JOINT} at {value} for all following motions.")
+    logger.info(f"Locked {HEIGHT_JOINT} at {value} (+/- {JOINT0_TOL}).")
 
 
 def move_tool_to(cobot, arm, logger, position, quat, label):
@@ -273,15 +246,6 @@ def set_gripper(cobot, gripper, logger, state):
     gripper.set_start_state_to_current_state()
     gripper.set_goal_state(configuration_name=state)
     return plan_and_execute(cobot, gripper, f"gripper -> {state}", logger)
-
-
-def current_tool_pose(cobot):
-    psm = cobot.get_planning_scene_monitor()
-    with psm.read_only() as scene:
-        T = np.array(scene.get_frame_transform(TOOL_LINK))
-    pos = T[:3, 3].copy()
-    quat = rotmat_to_quat(T[:3, :3])
-    return pos, quat
 
 
 # ---------------------------------------------------------------------------
@@ -313,40 +277,42 @@ def main():
     logger.info("MoveIt ready.")
     time.sleep(3.0)
 
-    # ----- 1. drive ONCE to init, then lock joint_0 -----------------------
+    # ----- 1. drive ONCE to init, then keep joint_0 ~fixed ----------------
     if not move_to_joints(cobot, arm, robot_model, logger, INIT_JOINTS, "move to init"):
         logger.error("Could not reach init pose, aborting.")
         rclpy.shutdown()
         return
     lock_height_joint(arm, logger, INIT_JOINTS[HEIGHT_JOINT])
 
-    # ----- 2. anchor to the tool pose AT init ------------------------------
-    p0, q0 = current_tool_pose(cobot)
-    logger.info(f"Tool position at init: {np.round(p0, 3).tolist()}")
+    # ----- 2. poses from the positions you set ----------------------------
+    cube_pos = np.array(CUBE_POS, dtype=float)
+    drop_pos = np.array(DROP_POS, dtype=float)
+    up = np.array([0.0, 0.0, RETREAT_LIFT])
+    offset = np.array([0.0, 0.0, CUBE_DROP])
 
-    grasp_pos = p0 + np.array([0.0, 0.0, -PICK_DROP])
-    pre_grasp_pos = grasp_pos + np.array([0.0, 0.0, LIFT])
-    place_pos = grasp_pos + np.array(PLACE_SHIFT)
-    pre_place_pos = place_pos + np.array([0.0, 0.0, LIFT])
+    grasp_pos = cube_pos + offset     # tool point above the cube
+    grasp_up = grasp_pos + up
+    place_pos = drop_pos + offset     # tool point above the drop spot
+    place_up = place_pos + up
 
-    # ----- 3. spawn cube (stays visible the whole time) --------------------
-    spawn_cube(cobot, logger, grasp_pos)
-    print_scene_objects(cobot, logger)
+    # ----- 3. spawn cube on the table -------------------------------------
+    spawn_cube(cobot, logger, cube_pos)
     time.sleep(1.0)
 
-    # ----- 4. pick-and-place ----------------------------------------------
+    # ----- 4. pick-and-place: approach, lift, carry, lower, release -------
     steps = [
-        ("open gripper",       lambda: set_gripper(cobot, gripper, logger, GRIPPER_OPEN_STATE)),
-        ("move above cube",    lambda: move_tool_to(cobot, arm, logger, pre_grasp_pos, q0, "pre-grasp")),
-        ("move down to cube",  lambda: move_tool_to(cobot, arm, logger, grasp_pos, q0, "grasp")),
-        ("close gripper",      lambda: set_gripper(cobot, gripper, logger, GRIPPER_CLOSE_STATE)),
-        ("attach cube",        lambda: (attach_cube(cobot, logger) or True)),
-        ("lift cube",          lambda: move_tool_to(cobot, arm, logger, pre_grasp_pos, q0, "lift")),
-        ("move over drop",     lambda: move_tool_to(cobot, arm, logger, pre_place_pos, q0, "pre-place")),
-        ("move down to drop",  lambda: move_tool_to(cobot, arm, logger, place_pos, q0, "place")),
-        ("open gripper",       lambda: set_gripper(cobot, gripper, logger, GRIPPER_OPEN_STATE)),
-        ("detach cube",        lambda: (detach_cube(cobot, logger) or True)),
-        ("retreat",            lambda: move_tool_to(cobot, arm, logger, pre_place_pos, q0, "retreat")),
+        ("open gripper",        lambda: set_gripper(cobot, gripper, logger, GRIPPER_OPEN_STATE)),
+        ("drive to cube",       lambda: move_tool_to(cobot, arm, logger, grasp_pos, GRASP_QUAT, "approach")),
+        ("close gripper",       lambda: set_gripper(cobot, gripper, logger, GRIPPER_CLOSE_STATE)),
+        ("attach cube",         lambda: (attach_cube(cobot, logger) or True)),
+        ("lift cube",           lambda: move_tool_to(cobot, arm, logger, grasp_up, GRASP_QUAT, "lift")),
+        ("carry over drop",     lambda: move_tool_to(cobot, arm, logger, place_up, GRASP_QUAT, "carry")),
+        ("lower to drop",       lambda: move_tool_to(cobot, arm, logger, place_pos, GRASP_QUAT, "lower")),
+        ("open gripper",        lambda: set_gripper(cobot, gripper, logger, GRIPPER_OPEN_STATE)),
+        ("detach cube",         lambda: (detach_cube(cobot, logger) or True)),
+        ("lift off",            lambda: move_tool_to(cobot, arm, logger, place_up, GRASP_QUAT, "retreat")),
+        ("return to init",      lambda: move_to_joints(cobot, arm, robot_model, logger, INIT_JOINTS, "return to init")),
+        ("reset: remove cube",  lambda: (remove_cube_from_world(cobot, logger) or True)),
     ]
 
     for name, action in steps:
