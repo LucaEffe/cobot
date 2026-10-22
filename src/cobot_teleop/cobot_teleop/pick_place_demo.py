@@ -46,8 +46,7 @@ from py_utils.planner_utils import wait_for_joint_states, generate_moveit_config
 CUBE_POS = (0.4, -0.285, 0.773)   # where the cube lies on the table
 DROP_POS = (0.534, -0.130, 0.773)   # where to put it down (fixed spot)
 
-# How the gripper is turned when it grasps (quaternion x, y, z, w). This is an
-# orientation, not a joint angle -- MoveIt solves the joints for it. Leave it.
+# How the gripper is turned when it grasps (quaternion x, y, z, w). 
 GRASP_QUAT = (0.673105, 0.738588, 0.031103, -0.021228)
 
 # ===========================================================================
