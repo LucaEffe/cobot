@@ -1,0 +1,10 @@
+{"t": 0.0, "event": "init", "joints": {"joint_0": 0.3, "joint_1": 0.0, "joint_2": 0.0, "joint_3": 0.0, "joint_4": 0.0, "joint_5": 0.0, "joint_6": 0.0}, "gripper": "open"}
+{"t": 1790248054.24361, "event": "waypoint", "joints": {"joint_0": 0.3, "joint_1": 0.158801, "joint_2": -0.552496, "joint_3": -0.043703, "joint_4": 0.010701, "joint_5": 0.1534, "joint_6": 0.097601}, "gripper": "open"}
+{"t": 1790248071.0448635, "event": "grip", "joints": {"joint_0": 0.3, "joint_1": 0.1627, "joint_2": -0.595796, "joint_3": -0.078203, "joint_4": 0.0098, "joint_5": 0.091399, "joint_6": 0.091099}, "gripper": "closed"}
+{"t": 1790248076.540732, "event": "waypoint", "joints": {"joint_0": 0.3, "joint_1": 0.162801, "joint_2": -0.412397, "joint_3": -0.077103, "joint_4": 0.0101, "joint_5": 0.2438, "joint_6": 0.1032}, "gripper": "closed"}
+{"t": 1790248083.3413954, "event": "waypoint", "joints": {"joint_0": 0.3, "joint_1": 0.6194, "joint_2": -0.412596, "joint_3": -0.055803, "joint_4": 0.0118, "joint_5": 0.2809, "joint_6": 0.145199}, "gripper": "closed"}
+{"t": 1790248092.2426865, "event": "waypoint", "joints": {"joint_0": 0.3, "joint_1": 0.6166, "joint_2": -0.524096, "joint_3": -0.206204, "joint_4": 0.007199, "joint_5": 0.0324, "joint_6": 0.092099}, "gripper": "closed"}
+{"t": 1790248101.141646, "event": "release", "joints": {"joint_0": 0.3, "joint_1": 0.6166, "joint_2": -0.524096, "joint_3": -0.206204, "joint_4": 0.007199, "joint_5": 0.0324, "joint_6": 0.092099}, "gripper": "open"}
+{"t": 1790248107.0432174, "event": "waypoint", "joints": {"joint_0": 0.3, "joint_1": 0.6011, "joint_2": -0.417696, "joint_3": -0.195004, "joint_4": 0.007301, "joint_5": 0.0324, "joint_6": 0.0978}, "gripper": "open"}
+{"t": 1790248113.9413922, "event": "last", "joints": {"joint_0": 0.3, "joint_1": 0.6011, "joint_2": -0.417696, "joint_3": -0.195103, "joint_4": 0.007301, "joint_5": 0.0324, "joint_6": 0.0978}, "gripper": "open"}
+{"t": 0.0, "event": "init", "joints": {"joint_0": 0.3, "joint_1": 0.0, "joint_2": 0.0, "joint_3": 0.0, "joint_4": 0.0, "joint_5": 0.0, "joint_6": 0.0}, "gripper": "open"}

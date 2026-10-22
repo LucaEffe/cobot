@@ -1,0 +1,16 @@
+{
+  "created": "2026-09-24T11:08:34",
+  "mode": "teach",
+  "arm_joints": [
+    "joint_0",
+    "joint_1",
+    "joint_2",
+    "joint_3",
+    "joint_4",
+    "joint_5",
+    "joint_6"
+  ],
+  "gripper_group": "gripper_group",
+  "num_waypoints": 10,
+  "notes": ""
+}
