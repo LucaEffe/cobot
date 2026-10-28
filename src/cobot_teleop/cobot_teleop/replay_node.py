@@ -6,18 +6,22 @@ Wires together:
     replay_core.py  -> init safety check + action plan (pure logic)
     arm.py          -> execute arm motions (MoveIt)
     grippers.py     -> execute gripper changes (sim MoveIt / real OPC-UA)
+    recording.py    -> optionally record the executed run as an episode
 
 Safety: replay only runs when the robot is at the init pose. With
 --move-to-init the robot is homed to init first instead of aborting.
 
     ros2 run cobot_teleop replay_node <waypoints.jsonl>
         [--controller-type sim|real] [--move-to-init] [--init-tol T]
-        [--skip-init]
+        [--skip-init] [--speed S]
+        [--pipeline P] [--planner-id ID]
+        [--record] [--role production|comparison] [--planner-name NAME] [--note TXT]
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import time
 
 import rclpy
@@ -31,8 +35,9 @@ from py_utils.planner_utils import (
 )
 
 from .arm import ArmExecutor, read_current_arm_joints
-from .config import DEFAULT_INIT_TOL, INIT_JOINTS
+from .config import DEFAULT_INIT_TOL, INIT_JOINTS, bag_topics_for_role
 from .grippers import make_gripper
+from .recording import EpisodeRecorder
 from .replay_core import (
     MoveArm,
     SetGripper,
@@ -83,7 +88,54 @@ def _parse_args():
         help="Name of the plan_request_params block used for speed "
         "scaling. Default 'ompl_rrtc'.",
     )
+    parser.add_argument(
+        "--pipeline",
+        default="ompl",
+        help="MoveIt planning pipeline: ompl | chomp | stomp | "
+        "pilz_industrial_motion_planner. Default 'ompl'.",
+    )
+    parser.add_argument(
+        "--planner-id",
+        default="RRTstarkConfigDefault",
+        help="Planner id (OMPL/Pilz). Empty for CHOMP/STOMP. "
+        "Default 'RRTstarkConfigDefault'.",
+    )
+    # --- recording ---
+    parser.add_argument(
+        "--record",
+        action="store_true",
+        help="Record the executed run as a rosbag episode under the "
+        "recording's episodes/ folder.",
+    )
+    parser.add_argument(
+        "--role",
+        choices=["production", "comparison"],
+        default="production",
+        help="production -> full topics incl. cameras (training data); "
+        "comparison -> motion topics only (planner study).",
+    )
+    parser.add_argument(
+        "--planner-name",
+        default=None,
+        help="Short name for the episode folder "
+        "(default derived from planner-id/pipeline).",
+    )
+    parser.add_argument(
+        "--note",
+        default="",
+        help="Free-text note stored in the episode meta.json.",
+    )
     return parser.parse_args()
+
+
+def _planner_short_name(pipeline: str, planner_id: str) -> str:
+    if planner_id:
+        return (
+            planner_id.replace("kConfigDefault", "")
+            .replace("ConfigDefault", "")
+            .lower()
+        )
+    return pipeline.split("_")[0].lower()
 
 
 def _run_plan(plan, arm: ArmExecutor, gripper, logger) -> bool:
@@ -173,7 +225,7 @@ def main():
             "wait_for_initial_state_timeout": 10.0,
         }
 
-        #Start-Toleranz lockern
+        # Start-Toleranz lockern
         te = moveit_config.setdefault("trajectory_execution", {})
         te["allowed_start_tolerance"] = 0.0
 
@@ -185,6 +237,8 @@ def main():
             cobot, logger,
             speed=args.speed,
             planner_config=args.planner_config,
+            pipeline=args.pipeline,
+            planner_id=args.planner_id,
         )
         gripper = make_gripper(
             use_real=use_real,
@@ -199,14 +253,39 @@ def main():
                 return
             logger.info("Init pose reached.")
 
-        # --- build pure plan, then execute it ---
+        # --- build pure plan ---
         plan = build_action_plan(waypoints, skip_init=args.skip_init)
         if not plan:
             logger.error("No playable actions.")
             return
 
-        if not _run_plan(plan, arm, gripper, logger):
-            logger.error("Replay failed.")
+        # --- optional episode recording ---
+        episode = None
+        if args.record:
+            rec_root = os.path.dirname(
+                os.path.dirname(os.path.abspath(args.waypoints))
+            )
+            pname = args.planner_name or _planner_short_name(
+                args.pipeline, args.planner_id
+            )
+            topics = bag_topics_for_role(args.role)
+            episode = EpisodeRecorder(rec_root, pname, args.role, topics, logger)
+            episode.start()   # waits ~2s so rosbag catches the whole motion
+
+        try:
+            ok = _run_plan(plan, arm, gripper, logger)
+            if not ok:
+                logger.error("Replay failed.")
+        finally:
+            if episode is not None:
+                episode.finish(extra_meta={
+                    "planner_id": args.planner_id,
+                    "pipeline": args.pipeline,
+                    "speed": args.speed,
+                    "controller_type": args.controller_type,
+                    "waypoints": os.path.abspath(args.waypoints),
+                    "note": args.note,
+                })
 
     except KeyboardInterrupt:
         logger.warn("Replay interrupted by user.")

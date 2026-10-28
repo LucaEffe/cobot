@@ -7,14 +7,14 @@ execution) and writes the end-effector (gripper_tcp) path to a CSV -- once per
 planner. One run of this script plans the whole route with EVERY planner in the
 PLANNERS list below, so you don't have to edit + rerun for each one.
 
-Output goes to:   <this script's folder>/planner_comparison/<label>/
+Output goes to:   <this script's folder>/results/<label>/
                       tcp_path_rrtconnect.csv
                       tcp_path_rrtstar.csv
                       ...
                       meta.json
 The <label> is a short name YOU choose, so you don't have to deal with the long
 timestamp folder names. Output always lands next to this script
-(eval/planner_comparison/), no matter where you start it from.
+(eval/results/), no matter where you start it from.
 
 Usage (sim bringup running, workspace sourced):
     python3 .../planner_logger.py <waypoints.jsonl | recording_dir> <label>
@@ -60,9 +60,9 @@ PLANNERS = [
 
 PLAN_CONFIG_NS = "ompl_rrtc"   # PlanRequestParameters namespace (defaults source)
 RUNS = 1                        # >1 to check consistency of each planner
-# Outputs always land next to this script, in planner_comparison/<label>/.
+# Outputs always land next to this script, in results/<label>/.
 OUTPUT_ROOT = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "planner_comparison")
+    os.path.dirname(os.path.abspath(__file__)), "results")
 # ===========================================================================
 
 ARM_JOINTS = ["joint_0", "joint_1", "joint_2", "joint_3",

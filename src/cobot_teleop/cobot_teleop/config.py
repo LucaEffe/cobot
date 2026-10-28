@@ -65,8 +65,8 @@ DEFAULT_DATA_ROOT = "/workspace/cobot_recordings"
 
 DEFAULT_PEDAL_DEVICE = "/dev/input/event27"
 
-# Topics recorded continuously by rosbag (the raw "archive" alongside the
-# distilled waypoints.jsonl).
+# Full archive: everything we might ever need, including the cameras. Used
+# for teach recordings and for production replays (the training data).
 BAG_TOPICS = [
     "/joint_states",
     "/tf",
@@ -76,3 +76,22 @@ BAG_TOPICS = [
     "/camera/camera/color/image_raw",
     "/camera/camera/depth/color/points",
 ]
+
+# Motion only (no cameras): enough for the planner comparison / tracking-error
+# study, where images aren't needed and would just bloat the bag.
+MOTION_BAG_TOPICS = [
+    "/joint_states",
+    "/tf",
+    "/tf_static",
+    "/dynamic_joint_states",
+    "/arm_group_controller/controller_state",
+]
+
+
+def bag_topics_for_role(role: str):
+    """Topics to record for a replay episode of the given role.
+
+    "production"  -> full set incl. cameras (becomes training data).
+    "comparison"  -> motion only (planner comparison, no images).
+    """
+    return BAG_TOPICS if role == "production" else MOTION_BAG_TOPICS

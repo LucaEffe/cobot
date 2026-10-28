@@ -2,7 +2,7 @@
 """
 Plot and compare the planner CSVs written by planner_logger.py.
 
-Reads   planner_comparison/<label>/tcp_path_*.csv  (+ meta.json)
+Reads   results/<label>/tcp_path_*.csv  (+ meta.json)
 Writes  into the same folder:
     comparison_3d.html   interactive, rotatable 3D (plotly; open in a browser)
     comparison_3d.png    static 3D + 2D projections (matplotlib)
@@ -14,7 +14,7 @@ environment can produce.
 Usage:
     python3 .../plot_comparison.py <label>
     python3 .../plot_comparison.py <label> --show     # also open a rotatable 3D window
-    python3 .../plot_comparison.py <label> --root /some/other/planner_comparison
+    python3 .../plot_comparison.py <label> --root /some/other/results
 
 No ROS needed -- pure offline analysis, only numpy + matplotlib. Run it with a
 clean python (e.g. the ~/plotenv venv), so matplotlib and numpy versions match.
@@ -414,7 +414,7 @@ def write_metrics(planners, out_csv):
 def main():
     args = [a for a in sys.argv[1:]]
     root = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "planner_comparison")
+                        "results")
     show = False
     if "--show" in args:
         show = True

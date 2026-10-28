@@ -78,8 +78,8 @@ class ArmExecutor:
 
     def __init__(self, cobot, logger, speed: float = 1.0,
                  planner_config: str = "ompl_rrtc",
-                 pipeline: str = "stomp",
-                 planner_id: str = ""):
+                 pipeline: str = "ompl",
+                 planner_id: str = "RRTstarkConfigDefault"):
         self.cobot = cobot
         self.logger = logger
         self.robot_model = cobot.get_robot_model()

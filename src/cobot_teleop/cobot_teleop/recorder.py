@@ -1,18 +1,17 @@
 """
 Teach recording core.
 
-Owns the episode folder, waypoints.jsonl, the rosbag process and meta.json.
-It does NOT talk to ROS topics itself -- joint snapshots are pushed in by
-the node. Every recording starts with an explicit init waypoint so each
-episode is a self-contained init -> task -> init trajectory.
+Owns the episode folder, waypoints.jsonl and meta.json. The rosbag itself is
+driven by BagRecorder (recording.py), the single recorder shared with replay.
+It does NOT talk to ROS topics itself -- joint snapshots are pushed in by the
+node. Every recording starts with an explicit init waypoint so each episode is
+a self-contained init -> task -> init trajectory.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import signal
-import subprocess
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -25,6 +24,7 @@ from .config import (
     GRIPPER_OPEN,
     INIT_JOINTS,
 )
+from .recording import BagRecorder
 from .waypoints import Waypoint, dump_waypoint
 
 
@@ -37,7 +37,7 @@ class TeachRecorder:
         self.episode_dir: Optional[str] = None
         self.teach_dir: Optional[str] = None
         self._traj_file = None
-        self._bag_proc = None
+        self._bag: Optional[BagRecorder] = None
         self.count = 0
 
     # ---- logging helper ----
@@ -62,12 +62,11 @@ class TeachRecorder:
         )
         self.count = 0
 
-        # rosbag as its own process group so we can stop it cleanly.
-        bag_dir = os.path.join(self.teach_dir, "rosbag")
-        cmd = ["ros2", "bag", "record", "-o", bag_dir, "--topics"] + BAG_TOPICS
-        self._bag_proc = subprocess.Popen(
-            cmd, stdin=subprocess.DEVNULL, preexec_fn=os.setsid
+        # the shared recorder drives rosbag (full archive incl. cameras)
+        self._bag = BagRecorder(
+            os.path.join(self.teach_dir, "rosbag"), BAG_TOPICS, self.logger
         )
+        self._bag.start(settle=0.0)
 
         self.recording = True
         self._log(f"=== RECORDING STARTED -> {self.teach_dir} ===")
@@ -127,7 +126,9 @@ class TeachRecorder:
         if not self.recording:
             return
 
-        self._stop_bag()
+        if self._bag is not None:
+            self._bag.stop()
+            self._bag = None
 
         if self._traj_file:
             self._traj_file.close()
@@ -159,18 +160,3 @@ class TeachRecorder:
             f"Waypoint #{self.count} "
             f"({waypoint.event}, gripper={waypoint.gripper})"
         )
-
-    def _stop_bag(self) -> None:
-        if self._bag_proc is None:
-            return
-        try:
-            # SIGINT so rosbag writes metadata.yaml cleanly.
-            os.killpg(os.getpgid(self._bag_proc.pid), signal.SIGINT)
-            self._bag_proc.wait(timeout=15)
-        except Exception as e:  # noqa: BLE001
-            self._log(f"Bag stop issue: {e}")
-            try:
-                self._bag_proc.terminate()
-            except Exception:
-                pass
-        self._bag_proc = None
