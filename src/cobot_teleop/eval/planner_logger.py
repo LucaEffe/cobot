@@ -7,20 +7,30 @@ execution) and writes the end-effector (gripper_tcp) path to a CSV -- once per
 planner. One run of this script plans the whole route with EVERY planner in the
 PLANNERS list below, so you don't have to edit + rerun for each one.
 
+Optionally inserts a VIRTUAL barrier between the grasp and the place point (a
+thin, fictitious wall that only exists in the planning scene). On an open route
+every planner finds the same straight line, so their paths overlap; with the
+barrier in the way each planner has to route OVER/AROUND it, and that is where
+they start to differ -- which is the whole point of the comparison. The barrier
+is virtual, so on the real robot nothing is physically there (the arm just arcs
+higher). See cobot_teleop/scene.py.
+
 Output goes to:   <this script's folder>/results/<label>/
                       tcp_path_rrtconnect.csv
                       tcp_path_rrtstar.csv
                       ...
                       meta.json
-The <label> is a short name YOU choose, so you don't have to deal with the long
-timestamp folder names. Output always lands next to this script
-(eval/results/), no matter where you start it from.
 
 Usage (sim bringup running, workspace sourced):
+    # with the barrier (default) -- shows planner differences
     python3 .../planner_logger.py <waypoints.jsonl | recording_dir> <label>
 
-Example:
-    python3 .../planner_logger.py /workspace/cobot_recordings/2026-09-22_14-47-57 route1
+    # baseline without the barrier (planners collapse onto one line)
+    python3 .../planner_logger.py <recording_dir> <label> --no-obstacle
+
+Barrier knobs (metres): --thickness --width --clearance --drop-below
+Pick the two points yourself (waypoint indices) if auto-detect is wrong:
+    --between <grasp_idx> <place_idx>
 
 To add/remove a planner, edit the PLANNERS list below.
 """
@@ -29,6 +39,7 @@ import os
 import sys
 import csv
 import json
+import argparse
 import datetime
 
 import numpy as np
@@ -40,6 +51,8 @@ from moveit.core.robot_state import RobotState
 
 from py_utils.planner_utils import wait_for_joint_states, generate_moveit_config
 
+from cobot_teleop.scene import add_barrier
+
 
 # ===========================================================================
 # Planners to run in one go. Comment out any you don't want.
@@ -49,10 +62,10 @@ from py_utils.planner_utils import wait_for_joint_states, generate_moveit_config
 #   planning_time (optional) -> seconds; useful for the optimizing planners
 # ===========================================================================
 PLANNERS = [
-    {"name": "rrtconnect", "pipeline": "ompl",  "planner_id": "RRTConnectkConfigDefault"},
-    {"name": "rrt",        "pipeline": "ompl",  "planner_id": "RRTkConfigDefault"},
-    {"name": "rrtstar",    "pipeline": "ompl",  "planner_id": "RRTstarkConfigDefault", "planning_time": 2.0},
-    {"name": "prm",        "pipeline": "ompl",  "planner_id": "PRMkConfigDefault"},
+    {"name": "rrtconnect", "pipeline": "ompl",  "planner_id": "RRTConnectkConfigDefault", "planning_time": 5.0},
+    {"name": "rrt",        "pipeline": "ompl",  "planner_id": "RRTkConfigDefault", "planning_time": 5.0},
+    {"name": "rrtstar",    "pipeline": "ompl",  "planner_id": "RRTstarkConfigDefault", "planning_time": 5.0},
+    {"name": "prm",        "pipeline": "ompl",  "planner_id": "PRMkConfigDefault", "planning_time": 5.0},
     {"name": "chomp",      "pipeline": "chomp", "planner_id": ""},
     {"name": "stomp",      "pipeline": "stomp", "planner_id": ""},
     {"name": "pilz_ptp",   "pipeline": "pilz_industrial_motion_planner", "planner_id": "PTP"},
@@ -86,7 +99,8 @@ def resolve_waypoints(arg):
 
 
 def load_waypoints(path):
-    rows = []
+    """Return a list of records: {joints, gripper, event}."""
+    recs = []
     with open(path, "r") as f:
         for line in f:
             line = line.strip()
@@ -94,8 +108,12 @@ def load_waypoints(path):
                 continue
             wp = json.loads(line)
             j = wp["joints"]
-            rows.append({a: float(j[a]) for a in ARM_JOINTS})
-    return rows
+            recs.append({
+                "joints": {a: float(j[a]) for a in ARM_JOINTS},
+                "gripper": wp.get("gripper"),
+                "event": wp.get("event"),
+            })
+    return recs
 
 
 def same_pose(a, b):
@@ -108,13 +126,35 @@ def tcp_xyz(state):
     return T[0, 3], T[1, 3], T[2, 3]
 
 
-def plan_route(arm, robot_model, waypoints, params, planner, logger):
+def tcp_of(robot_model, joints):
+    st = RobotState(robot_model)
+    st.joint_positions = joints
+    st.update()
+    return tcp_xyz(st)
+
+
+def find_grasp_place(recs, logger):
+    """Grasp = first waypoint where the gripper is closed; place = first
+    waypoint after that where it is open again. Returns (grasp_idx, place_idx)
+    or (None, None) if it can't be determined from the gripper states."""
+    grasp = None
+    for i, r in enumerate(recs):
+        if grasp is None:
+            if r.get("gripper") == "closed":
+                grasp = i
+        else:
+            if r.get("gripper") == "open":
+                return grasp, i
+    return grasp, None
+
+
+def plan_route(arm, robot_model, recs, params, planner, logger):
     """Plan the whole route with one planner; return list of CSV rows."""
     rows = []  # run, segment, t, x, y, z, joint_0..6
     for run in range(RUNS):
         t_acc = 0.0
-        for k in range(len(waypoints) - 1):
-            start_j, goal_j = waypoints[k], waypoints[k + 1]
+        for k in range(len(recs) - 1):
+            start_j, goal_j = recs[k]["joints"], recs[k + 1]["joints"]
             if same_pose(start_j, goal_j):
                 continue
 
@@ -159,7 +199,7 @@ def write_csv(path, rows):
         w.writerows(rows)
 
 
-def update_meta(out_dir, label, source, planner, n_points):
+def update_meta(out_dir, label, source, planner, n_points, obstacle):
     meta_path = os.path.join(out_dir, "meta.json")
     if os.path.isfile(meta_path):
         with open(meta_path) as f:
@@ -171,6 +211,7 @@ def update_meta(out_dir, label, source, planner, n_points):
             "created": datetime.datetime.now().isoformat(timespec="seconds"),
             "planners": {},
         }
+    meta["obstacle"] = obstacle
     meta["planners"][planner["name"]] = {
         "pipeline": planner["pipeline"],
         "planner_id": planner["planner_id"],
@@ -184,12 +225,28 @@ def update_meta(out_dir, label, source, planner, n_points):
         json.dump(meta, f, indent=2)
 
 
+def parse_args():
+    ap = argparse.ArgumentParser(description="Plan a teach route with every planner.")
+    ap.add_argument("waypoints", help="waypoints.jsonl or a recording dir")
+    ap.add_argument("label", help="short name for results/<label>/")
+    ap.add_argument("--obstacle", dest="obstacle", action="store_true", default=True,
+                    help="insert the virtual barrier (default)")
+    ap.add_argument("--no-obstacle", dest="obstacle", action="store_false",
+                    help="plan without the barrier (baseline)")
+    ap.add_argument("--thickness", type=float, default=0.02, help="wall thickness along travel [m]")
+    ap.add_argument("--width", type=float, default=0.30, help="wall width across travel [m]")
+    ap.add_argument("--clearance", type=float, default=0.05, help="wall top above the line [m]")
+    ap.add_argument("--drop-below", dest="drop_below", type=float, default=0.15,
+                    help="how far the wall reaches below the line [m]")
+    ap.add_argument("--between", nargs=2, type=int, default=None, metavar=("GRASP", "PLACE"),
+                    help="waypoint indices to place the barrier between (override auto-detect)")
+    return ap.parse_args()
+
+
 def main():
-    if len(sys.argv) < 3:
-        print("usage: planner_logger.py <waypoints.jsonl | recording_dir> <label>")
-        return
-    waypoints_path = resolve_waypoints(sys.argv[1])
-    label = sys.argv[2]
+    args = parse_args()
+    waypoints_path = resolve_waypoints(args.waypoints)
+    label = args.label
 
     out_dir = os.path.join(OUTPUT_ROOT, label)
     os.makedirs(out_dir, exist_ok=True)
@@ -197,8 +254,8 @@ def main():
     rclpy.init()
     logger = get_logger("planner_logger")
 
-    waypoints = load_waypoints(waypoints_path)
-    logger.info(f"Loaded {len(waypoints)} waypoints from {waypoints_path}")
+    recs = load_waypoints(waypoints_path)
+    logger.info(f"Loaded {len(recs)} waypoints from {waypoints_path}")
 
     logger.info("Waiting for joint states ...")
     wait_for_joint_states(logger)
@@ -218,6 +275,48 @@ def main():
     robot_model = cobot.get_robot_model()
     arm = cobot.get_planning_component(ARM_GROUP)
 
+    # --- virtual barrier (so the planners actually differ) ----------------
+    obstacle_meta = {"enabled": False}
+    if args.obstacle:
+        if args.between is not None:
+            gi, pi = args.between
+        else:
+            gi, pi = find_grasp_place(recs, logger)
+        if gi is None or pi is None:
+            logger.error(
+                "Could not auto-detect grasp/place from gripper states "
+                f"(got grasp={gi}, place={pi}). Pass --between <grasp> <place>, "
+                "or use --no-obstacle. Gripper states per waypoint: "
+                f"{[r.get('gripper') for r in recs]}")
+            sys.stdout.flush()
+            os._exit(1)
+        g = tcp_of(robot_model, recs[gi]["joints"])
+        p = tcp_of(robot_model, recs[pi]["joints"])
+        # The arm travels at the LIFTED height, not at the grasp/place height.
+        # Reference the wall's top to the highest waypoint between grasp and
+        # place (the transport height) so the wall actually blocks the path.
+        transport_z = max(tcp_of(robot_model, recs[i]["joints"])[2]
+                          for i in range(gi, pi + 1))
+        pos, quat, dims = add_barrier(
+            cobot, g, p, logger,
+            thickness=args.thickness, width=args.width,
+            clearance=args.clearance, drop_below=args.drop_below,
+            ref_top_z=transport_z)
+        logger.info(f"Barrier between waypoint {gi} {np.round(g, 3).tolist()} "
+                    f"and waypoint {pi} {np.round(p, 3).tolist()}; "
+                    f"transport height {transport_z:.3f} m, wall top "
+                    f"{transport_z + args.clearance:.3f} m")
+        obstacle_meta = {
+            "enabled": True,
+            "grasp_idx": gi, "place_idx": pi,
+            "grasp_xyz": [float(v) for v in g], "place_xyz": [float(v) for v in p],
+            "transport_z": float(transport_z),
+            "position": [float(v) for v in pos],
+            "dims": [float(v) for v in dims],
+            "thickness": args.thickness, "width": args.width,
+            "clearance": args.clearance, "drop_below": args.drop_below,
+        }
+
     # run every planner in the list, one after another
     for planner in PLANNERS:
         logger.info("=" * 60)
@@ -230,7 +329,7 @@ def main():
             if planner.get("planning_time") is not None:
                 params.planning_time = float(planner["planning_time"])
 
-            rows = plan_route(arm, robot_model, waypoints, params, planner, logger)
+            rows = plan_route(arm, robot_model, recs, params, planner, logger)
         except Exception as e:  # one bad planner must not kill the rest
             logger.error(f"[{planner['name']}] skipped: {e}")
             continue
@@ -241,7 +340,7 @@ def main():
 
         csv_path = os.path.join(out_dir, f"tcp_path_{planner['name']}.csv")
         write_csv(csv_path, rows)
-        update_meta(out_dir, label, waypoints_path, planner, len(rows))
+        update_meta(out_dir, label, waypoints_path, planner, len(rows), obstacle_meta)
         logger.info(f"[{planner['name']}] wrote {len(rows)} points to {csv_path}")
 
     logger.info("=" * 60)

@@ -75,7 +75,10 @@ def pick_js_topic(reader):
             f"No {JS_TYPE} topic in the bag. Topics: "
             f"{[(t.name, t.type) for t in topics]}"
         )
-    for pref in ("/joint_states", "joint_states"):
+    # Prefer the dense OPC-UA stream (keeps publishing during motion) over the
+    # ros2_control /joint_states (which freezes while the SPS executes a move).
+    # Teach bags only have /joint_states (dense there, no SPS) -> used as well.
+    for pref in ("/measured_joint_states", "/joint_states", "joint_states"):
         if pref in js:
             return pref
     return js[0]

@@ -65,10 +65,16 @@ DEFAULT_DATA_ROOT = "/workspace/cobot_recordings"
 
 DEFAULT_PEDAL_DEVICE = "/dev/input/event27"
 
+# /measured_joint_states is the dense joint stream from opcua_joint_reader.py
+# (a second OPC-UA connection). Unlike /joint_states it keeps publishing WHILE
+# the arm moves, so it captures the real executed motion. Run that reader
+# alongside a replay to record it.
+
 # Full archive: everything we might ever need, including the cameras. Used
 # for teach recordings and for production replays (the training data).
 BAG_TOPICS = [
     "/joint_states",
+    "/measured_joint_states",
     "/tf",
     "/tf_static",
     "/dynamic_joint_states",
@@ -81,6 +87,7 @@ BAG_TOPICS = [
 # study, where images aren't needed and would just bloat the bag.
 MOTION_BAG_TOPICS = [
     "/joint_states",
+    "/measured_joint_states",
     "/tf",
     "/tf_static",
     "/dynamic_joint_states",

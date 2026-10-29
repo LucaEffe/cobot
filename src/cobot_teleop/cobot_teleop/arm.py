@@ -74,12 +74,26 @@ class ArmExecutor:
 
     If the params cannot be built (e.g. pipeline not loaded), it falls back
     to the default planner with a warning instead of failing.
+
+    wait_for_arrival: the CobotTrajectoryController reports the
+    FollowJointTrajectory action as SUCCEEDED immediately (its
+    accepted_callback calls succeed() right away), so cobot.execute() returns
+    before the arm has actually moved. With several arm moves in a row, the
+    next goal then overwrites the controller's single-slot buffer before the
+    previous motion runs, so intermediate waypoints get skipped and the arm
+    drives straight to the last one. When wait_for_arrival is True, move_to()
+    blocks until the arm actually reached the goal (polled from MoveIt's
+    planning scene monitor) before returning, so the next waypoint is only
+    sent once this one is done.
     """
 
     def __init__(self, cobot, logger, speed: float = 1.0,
                  planner_config: str = "ompl_rrtc",
                  pipeline: str = "ompl",
-                 planner_id: str = "RRTstarkConfigDefault"):
+                 planner_id: str = "RRTstarkConfigDefault",
+                 wait_for_arrival: bool = True,
+                 arrival_tol: float = 0.02,
+                 arrival_timeout: float = 30.0):
         self.cobot = cobot
         self.logger = logger
         self.robot_model = cobot.get_robot_model()
@@ -88,6 +102,9 @@ class ArmExecutor:
         self.planner_config = planner_config
         self.pipeline = pipeline
         self.planner_id = planner_id
+        self.wait_for_arrival = wait_for_arrival
+        self.arrival_tol = arrival_tol          # rad (revolute) / m (prismatic)
+        self.arrival_timeout = arrival_timeout   # seconds
         self._plan_params = self._build_plan_params()
         self._last_goal: Optional[Dict[str, float]] = None
 
@@ -110,6 +127,40 @@ class ArmExecutor:
                 f"Could not build plan params ({e}); default planner."
             )
             return None
+
+    def _current_arm_joints(self) -> Optional[Dict[str, float]]:
+        """Read the current arm joints from MoveIt's planning scene monitor
+        (no extra node/executor -- reuses the monitor fed by /joint_states)."""
+        try:
+            psm = self.cobot.get_planning_scene_monitor()
+            with psm.read_only() as scene:
+                state = scene.current_state
+                state.update()
+                pos = state.joint_positions
+            return {j: float(pos[j]) for j in ARM_JOINTS}
+        except Exception as e:  # noqa: BLE001
+            self.logger.warn(f"Could not read current arm joints ({e}).")
+            return None
+
+    def _wait_until_reached(self, goal: Dict[str, float],
+                            settle: float = 0.3, poll: float = 0.1) -> bool:
+        """Block until every arm joint is within arrival_tol of `goal`, or
+        until arrival_timeout. Needed because the controller acks the motion
+        before it has actually run (see class docstring)."""
+        start = time.time()
+        while time.time() - start < self.arrival_timeout:
+            current = self._current_arm_joints()
+            if current is not None and all(
+                abs(current[j] - goal[j]) <= self.arrival_tol for j in ARM_JOINTS
+            ):
+                time.sleep(settle)   # let the arm settle before the next goal
+                return True
+            time.sleep(poll)
+        self.logger.warn(
+            f"Arm did not reach goal within {self.arrival_timeout:.0f}s "
+            f"(continuing anyway)."
+        )
+        return False
 
     def move_to(self, joints: Dict[str, float], label: str = "arm") -> bool:
         goal = {j: float(joints[j]) for j in ARM_JOINTS}
@@ -136,6 +187,11 @@ class ArmExecutor:
             self.cobot, self.arm, label, self.logger, self._plan_params
         )
         if ok:
+            # The controller acks the motion immediately, so wait until the arm
+            # actually arrived before sending the next waypoint (otherwise the
+            # next goal overwrites this one in the controller buffer).
+            if self.wait_for_arrival:
+                self._wait_until_reached(goal)
             self._last_goal = goal
         return ok
 

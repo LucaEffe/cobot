@@ -7,9 +7,15 @@ Writes  into the same folder:
     comparison_3d.html   interactive, rotatable 3D (plotly; open in a browser)
     comparison_3d.png    static 3D + 2D projections (matplotlib)
     metrics.csv          one row per planner (path length, duration, ...)
-and prints the metrics table to the console. Each output is best-effort: the
-HTML needs plotly, the PNG needs a working matplotlib -- you get whichever your
-environment can produce.
+and prints the metrics table to the console.
+
+If meta.json records a virtual barrier (from planner_logger --obstacle), it is
+drawn as a semi-transparent block in every view, so you can see which planner
+goes over it and which one failed.
+
+A segment that a planner could NOT solve is left out of its CSV; this plotter
+BREAKS the line there (instead of drawing a straight jump across the hole) and
+notes the missing segment in the legend, e.g. "pilz_ptp (seg 3 x)".
 
 Usage:
     python3 .../plot_comparison.py <label>
@@ -47,6 +53,8 @@ PLANNER_COLORS = {
 }
 FALLBACK_CYCLE = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
                   "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+
+BARRIER_COLOR = "#f4c20d"   # amber
 
 
 # --------------------------------------------------------------------------
@@ -126,7 +134,6 @@ def seg_jerk_rms(xyz, t):
     if len(xyz) < 4:
         return 0.0
     tt = np.array(t, dtype=float)
-    # ensure strictly increasing time; fall back to uniform if not
     if np.any(np.diff(tt) <= 0):
         tt = np.arange(len(xyz), dtype=float)
     try:
@@ -187,11 +194,59 @@ def compute_metrics(segs, run=0):
 
 
 # --------------------------------------------------------------------------
+# which segments did each planner solve? (so failures are visible)
+# --------------------------------------------------------------------------
+def segment_report(planners, run=0):
+    """Returns (all_segments, {planner: [missing segment ids]})."""
+    perp = {}
+    allsegs = set()
+    for name, segs in planners.items():
+        ks = {k[1] for k in segs if k[0] == run and len(segs[k]["xyz"])}
+        perp[name] = ks
+        allsegs |= ks
+    missing = {name: sorted(allsegs - ks) for name, ks in perp.items()}
+    return sorted(allsegs), missing
+
+
+def label_for(name, missing):
+    m = missing.get(name, [])
+    if not m:
+        return name
+    return f"{name} (seg {','.join(str(s) for s in m)} x)"
+
+
+# --------------------------------------------------------------------------
+# path building: break the line where a segment is missing
+# --------------------------------------------------------------------------
+def ordered_path(segs, run=0):
+    """Continuous polyline (no breaks) -- used for bounds only."""
+    keys = sorted(k for k in segs if k[0] == run)
+    parts = [segs[k]["xyz"] for k in keys if len(segs[k]["xyz"])]
+    return np.vstack(parts) if parts else np.empty((0, 3))
+
+
+def ordered_path_broken(segs, run=0, tol=3e-3):
+    """Polyline with a NaN break wherever consecutive segments don't join
+    (a missing/failed segment), so the gap is NOT drawn as a straight jump."""
+    keys = sorted(k for k in segs if k[0] == run)
+    parts = []
+    prev_end = None
+    nan = np.full((1, 3), np.nan)
+    for k in keys:
+        xyz = segs[k]["xyz"]
+        if len(xyz) == 0:
+            continue
+        if prev_end is not None and np.linalg.norm(xyz[0] - prev_end) > tol:
+            parts.append(nan)
+        parts.append(xyz)
+        prev_end = xyz[-1]
+    return np.vstack(parts) if parts else np.empty((0, 3))
+
+
+# --------------------------------------------------------------------------
 # keyframes (taught segment endpoints, planner-independent)
 # --------------------------------------------------------------------------
 def keyframe_points(planners, run=0, tol=3e-3):
-    """Taught segment endpoints in path order; only consecutive duplicates
-    (shared endpoints) are merged, so distinct nearby keyframes are kept."""
     ref = None
     for name in ["rrtconnect", "rrt", "rrtstar", "prm", "stomp", "pilz_ptp"]:
         if name in planners:
@@ -212,36 +267,104 @@ def keyframe_points(planners, run=0, tol=3e-3):
     return np.array(pts) if pts else np.empty((0, 3))
 
 
-def ordered_path(segs, run=0):
-    keys = sorted(k for k in segs if k[0] == run)
-    if not keys:
-        return np.empty((0, 3))
-    return np.vstack([segs[k]["xyz"] for k in keys])
-
-
 def color_for(name, i):
     return PLANNER_COLORS.get(name, FALLBACK_CYCLE[i % len(FALLBACK_CYCLE)])
 
 
 # --------------------------------------------------------------------------
+# virtual barrier geometry (reconstructed from meta.json)
+# --------------------------------------------------------------------------
+def barrier_from_meta(meta):
+    obs = meta.get("obstacle") if isinstance(meta, dict) else None
+    if not obs or not obs.get("enabled"):
+        return None
+    return obs
+
+
+def barrier_corners(obs):
+    """8 corners of the oriented box, reconstructed from grasp/place + dims."""
+    g = np.asarray(obs["grasp_xyz"], dtype=float)
+    p = np.asarray(obs["place_xyz"], dtype=float)
+    pos = np.asarray(obs["position"], dtype=float)
+    dims = np.asarray(obs["dims"], dtype=float)
+    yaw = math.atan2(p[1] - g[1], p[0] - g[0])
+    ex = np.array([math.cos(yaw), math.sin(yaw), 0.0])   # along travel (thickness)
+    ey = np.array([-math.sin(yaw), math.cos(yaw), 0.0])  # across (width)
+    ez = np.array([0.0, 0.0, 1.0])                       # up (height)
+    hx, hy, hz = dims / 2.0
+    corners = []
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            for sz in (-1, 1):
+                corners.append(pos + sx * hx * ex + sy * hy * ey + sz * hz * ez)
+    return np.array(corners)   # index bits: 4*sx + 2*sy + 1*sz (0-based on + side)
+
+
+_BOX_FACES = [
+    (0, 1, 3, 2),   # -x
+    (4, 5, 7, 6),   # +x
+    (0, 1, 5, 4),   # -y
+    (2, 3, 7, 6),   # +y
+    (0, 2, 6, 4),   # -z
+    (1, 3, 7, 5),   # +z
+]
+
+
+def _convex_hull_2d(pts):
+    pts = sorted(set((round(float(x), 9), round(float(y), 9)) for x, y in pts))
+    if len(pts) <= 2:
+        return pts
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
+# --------------------------------------------------------------------------
 # plots
 # --------------------------------------------------------------------------
-def write_plotly_html(planners, kf, folder, label):
-    """Best-effort interactive HTML (needs plotly; open in a WebGL browser)."""
+def write_plotly_html(planners, kf, folder, label, missing, obs):
     try:
         import plotly.graph_objects as go
     except ImportError:
         print("  (plotly not installed -> no HTML; `pip install plotly` in this env)")
         return
     fig = go.Figure()
-    for i, (name, segs) in enumerate(planners.items()):
-        p = ordered_path(segs)
+
+    if obs is not None:
+        c = barrier_corners(obs)
+        tri = []
+        for (a, b, d, e) in _BOX_FACES:
+            tri.append((a, b, d))
+            tri.append((a, d, e))
+        i = [t[0] for t in tri]
+        j = [t[1] for t in tri]
+        k = [t[2] for t in tri]
+        fig.add_trace(go.Mesh3d(
+            x=c[:, 0], y=c[:, 1], z=c[:, 2], i=i, j=j, k=k,
+            color=BARRIER_COLOR, opacity=0.35, flatshading=True,
+            name="virtual barrier", showlegend=True, hoverinfo="name"))
+
+    for idx, (name, segs) in enumerate(planners.items()):
+        p = ordered_path_broken(segs)
         if len(p) == 0:
             continue
         fig.add_trace(go.Scatter3d(
             x=p[:, 0], y=p[:, 1], z=p[:, 2], mode="lines",
-            line=dict(color=color_for(name, i), width=4),
-            opacity=0.75, name=name))
+            line=dict(color=color_for(name, idx), width=4),
+            opacity=0.8, name=label_for(name, missing),
+            connectgaps=False))
     if len(kf):
         fig.add_trace(go.Scatter3d(
             x=kf[:, 0], y=kf[:, 1], z=kf[:, 2], mode="markers",
@@ -256,13 +379,37 @@ def write_plotly_html(planners, kf, folder, label):
     print(f"  wrote {out}  (open in a browser)")
 
 
-def _draw_3d(ax, planners, kf):
+def _draw_barrier_3d(ax, obs):
+    try:
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+    except Exception:
+        return
+    c = barrier_corners(obs)
+    faces = [[c[idx] for idx in face] for face in _BOX_FACES]
+    pc = Poly3DCollection(faces, facecolor=BARRIER_COLOR, alpha=0.25,
+                          edgecolor=BARRIER_COLOR, linewidths=0.5)
+    ax.add_collection3d(pc)
+
+
+def _draw_barrier_2d(ax, obs, a, b):
+    import matplotlib.patches as mpatches
+    c = barrier_corners(obs)
+    hull = _convex_hull_2d([(c[r, a], c[r, b]) for r in range(len(c))])
+    if len(hull) >= 3:
+        ax.add_patch(mpatches.Polygon(hull, closed=True, facecolor=BARRIER_COLOR,
+                                      alpha=0.25, edgecolor=BARRIER_COLOR, lw=0.8))
+
+
+def _draw_3d(ax, planners, kf, missing, obs):
+    if obs is not None:
+        _draw_barrier_3d(ax, obs)
     for i, (name, segs) in enumerate(planners.items()):
-        p = ordered_path(segs)
+        p = ordered_path_broken(segs)
         if len(p) == 0:
             continue
         ax.plot(p[:, 0], p[:, 1], p[:, 2],
-                color=color_for(name, i), alpha=0.8, lw=1.3, label=name)
+                color=color_for(name, i), alpha=0.85, lw=1.3,
+                label=label_for(name, missing))
     if len(kf):
         ax.scatter(kf[:, 0], kf[:, 1], kf[:, 2], c="black", marker="D",
                    s=25, depthshade=False)
@@ -270,18 +417,13 @@ def _draw_3d(ax, planners, kf):
     ax.set_ylabel("y [m]")
     ax.set_zlabel("z [m]")
     try:
-        ax.set_box_aspect(_equal_aspect(planners))
+        ax.set_box_aspect(_equal_aspect(planners, obs))
     except Exception:
         pass
     ax.view_init(elev=20, azim=-60)
 
 
-def plot(planners, kf, folder, label, show=False):
-    """Write comparison_3d.png (3D view + three equal-scale 2D projections).
-
-    With show=True, also open a separate rotatable 3D window (matplotlib, uses
-    the X display -- works in the VNC, no WebGL needed).
-    """
+def plot(planners, kf, folder, label, missing, obs, show=False):
     try:
         import matplotlib
         if not show:
@@ -291,8 +433,6 @@ def plot(planners, kf, folder, label, show=False):
         print("  (matplotlib not installed -> no PNG; the HTML still works)")
         return
 
-    # Some envs have a broken matplotlib 3D (e.g. two matplotlib versions mixed).
-    # Detect it up front so we skip the PNG cleanly instead of crashing.
     try:
         _t = plt.figure()
         _t.add_subplot(111, projection="3d")
@@ -301,25 +441,28 @@ def plot(planners, kf, folder, label, show=False):
         print(f"  (matplotlib 3D not available here -> no PNG; use the HTML. {e})")
         return
 
-    # 2x2 overview figure (saved as PNG)
     fig = plt.figure(figsize=(14, 10))
     ax3d = fig.add_subplot(2, 2, 1, projection="3d")
     axxy = fig.add_subplot(2, 2, 2)
     axxz = fig.add_subplot(2, 2, 3)
     axyz = fig.add_subplot(2, 2, 4)
 
-    _draw_3d(ax3d, planners, kf)
+    _draw_3d(ax3d, planners, kf, missing, obs)
     ax3d.set_title("3D view")
     ax3d.legend(loc="upper left", fontsize=7)
 
+    for ax, (a, b) in [(axxy, (0, 1)), (axxz, (0, 2)), (axyz, (1, 2))]:
+        if obs is not None:
+            _draw_barrier_2d(ax, obs, a, b)
+
     for i, (name, segs) in enumerate(planners.items()):
-        p = ordered_path(segs)
+        p = ordered_path_broken(segs)
         if len(p) == 0:
             continue
         c = color_for(name, i)
-        axxy.plot(p[:, 0], p[:, 1], color=c, alpha=0.8, lw=1.3)
-        axxz.plot(p[:, 0], p[:, 2], color=c, alpha=0.8, lw=1.3)
-        axyz.plot(p[:, 1], p[:, 2], color=c, alpha=0.8, lw=1.3)
+        axxy.plot(p[:, 0], p[:, 1], color=c, alpha=0.85, lw=1.3)
+        axxz.plot(p[:, 0], p[:, 2], color=c, alpha=0.85, lw=1.3)
+        axyz.plot(p[:, 1], p[:, 2], color=c, alpha=0.85, lw=1.3)
 
     if len(kf):
         for ax, (a, b) in [(axxy, (0, 1)), (axxz, (0, 2)), (axyz, (1, 2))]:
@@ -357,19 +500,20 @@ def plot(planners, kf, folder, label, show=False):
         plt.close(fig)
         return
 
-    # separate, large, rotatable 3D window
     fig3d = plt.figure(figsize=(10, 8))
     ax = fig3d.add_subplot(111, projection="3d")
-    _draw_3d(ax, planners, kf)
+    _draw_3d(ax, planners, kf, missing, obs)
     ax.set_title(f"TCP paths (drag to rotate) - {label}")
     ax.legend(loc="upper left", fontsize=8)
     print("  opening interactive window -- close it to finish")
     plt.show()
 
 
-def _equal_aspect(planners):
+def _equal_aspect(planners, obs=None):
     all_pts = [ordered_path(s) for s in planners.values()]
     all_pts = [p for p in all_pts if len(p)]
+    if obs is not None:
+        all_pts.append(barrier_corners(obs))
     if not all_pts:
         return (1, 1, 1)
     P = np.vstack(all_pts)
@@ -388,7 +532,7 @@ METRIC_COLS = [
 ]
 
 
-def write_metrics(planners, out_csv):
+def write_metrics(planners, out_csv, missing):
     rows = []
     for name, segs in planners.items():
         m = compute_metrics(segs)
@@ -400,21 +544,26 @@ def write_metrics(planners, out_csv):
         for r in rows:
             w.writerow(r)
     print(f"  wrote {out_csv}\n")
-    # pretty console table
     widths = {c: max(len(c), *(len(str(r.get(c, ""))) for r in rows)) for c in METRIC_COLS}
     header = "  ".join(c.ljust(widths[c]) for c in METRIC_COLS)
     print(header)
     print("-" * len(header))
     for r in rows:
         print("  ".join(str(r.get(c, "")).ljust(widths[c]) for c in METRIC_COLS))
+    # note any failed segments explicitly
+    failed = {n: m for n, m in missing.items() if m}
+    if failed:
+        print("\n  Note - segments a planner could NOT solve (left as gaps):")
+        for n, m in failed.items():
+            print(f"    {n}: segment(s) {', '.join(str(s) for s in m)}")
+        print("  (their metrics skip those segments, so compare them with care.)")
     return rows
 
 
 # --------------------------------------------------------------------------
 def main():
     args = [a for a in sys.argv[1:]]
-    root = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "results")
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
     show = False
     if "--show" in args:
         show = True
@@ -438,10 +587,16 @@ def main():
         return
     print(f"Loaded {len(planners)} planners from {folder}: {', '.join(planners)}\n")
 
+    obs = barrier_from_meta(meta)
+    if obs is not None:
+        print(f"  barrier: pos {np.round(obs['position'], 3).tolist()} "
+              f"dims {np.round(obs['dims'], 3).tolist()}")
+    _, missing = segment_report(planners)
+
     kf = keyframe_points(planners)
-    write_plotly_html(planners, kf, folder, label)
-    plot(planners, kf, folder, label, show=show)
-    write_metrics(planners, os.path.join(folder, "metrics.csv"))
+    write_plotly_html(planners, kf, folder, label, missing, obs)
+    plot(planners, kf, folder, label, missing, obs, show=show)
+    write_metrics(planners, os.path.join(folder, "metrics.csv"), missing)
 
 
 if __name__ == "__main__":
