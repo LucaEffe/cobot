@@ -22,11 +22,22 @@ Output goes to:   <this script's folder>/results/<label>/
                       meta.json
 
 Usage (sim bringup running, workspace sourced):
-    # with the barrier (default) -- shows planner differences
-    python3 .../planner_logger.py <waypoints.jsonl | recording_dir> <label>
+    # CLEAN comparison: one move grasp->place over the barrier (recommended)
+    python3 .../planner_logger.py <recording_dir> <label> --single-move
 
-    # baseline without the barrier (planners collapse onto one line)
-    python3 .../planner_logger.py <recording_dir> <label> --no-obstacle
+    # N attempts per planner (success rate + run-to-run variability)
+    python3 .../planner_logger.py <recording_dir> <label> --single-move --runs 10
+
+    # give every planner more time (do rrt/rrtstar/chomp find one then?)
+    python3 .../planner_logger.py <recording_dir> <label> --single-move --runs 10 --planning-time 20
+
+    # baseline: same single move, no barrier (planners collapse onto one line)
+    python3 .../planner_logger.py <recording_dir> <label> --single-move --no-obstacle
+
+    # whole route with the barrier (NOTE: the wall also interferes with the
+    # approach/grasp/place segments, so some of those may fail -- use
+    # --single-move for a clean planner comparison)
+    python3 .../planner_logger.py <recording_dir> <label>
 
 Barrier knobs (metres): --thickness --width --clearance --drop-below
 Pick the two points yourself (waypoint indices) if auto-detect is wrong:
@@ -72,7 +83,6 @@ PLANNERS = [
 ]
 
 PLAN_CONFIG_NS = "ompl_rrtc"   # PlanRequestParameters namespace (defaults source)
-RUNS = 1                        # >1 to check consistency of each planner
 # Outputs always land next to this script, in results/<label>/.
 OUTPUT_ROOT = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "results")
@@ -148,47 +158,79 @@ def find_grasp_place(recs, logger):
     return grasp, None
 
 
-def plan_route(arm, robot_model, recs, params, planner, logger):
-    """Plan the whole route with one planner; return list of CSV rows."""
+def plan_route(arm, robot_model, recs, params, planner, logger, run=0):
+    """Plan the whole route once with one planner; return rows tagged with `run`."""
     rows = []  # run, segment, t, x, y, z, joint_0..6
-    for run in range(RUNS):
-        t_acc = 0.0
-        for k in range(len(recs) - 1):
-            start_j, goal_j = recs[k]["joints"], recs[k + 1]["joints"]
-            if same_pose(start_j, goal_j):
+    t_acc = 0.0
+    for k in range(len(recs) - 1):
+        start_j, goal_j = recs[k]["joints"], recs[k + 1]["joints"]
+        if same_pose(start_j, goal_j):
+            continue
+
+        start = RobotState(robot_model)
+        start.joint_positions = start_j
+        start.update()
+        goal = RobotState(robot_model)
+        goal.joint_positions = goal_j
+        goal.update()
+
+        arm.set_start_state(robot_state=start)
+        arm.set_goal_state(robot_state=goal)
+
+        result = arm.plan(single_plan_parameters=params)
+        if not result:
+            logger.error(f"[{planner['name']}] run {run} segment {k}: planning FAILED")
+            continue
+
+        traj = result.trajectory
+        durations = traj.get_waypoint_durations()
+        n = len(traj)
+        for i in range(n):
+            if i == 0 and k > 0:
                 continue
+            state = traj[i]
+            x, y, z = tcp_xyz(state)
+            if i > 0:
+                t_acc += float(durations[i])
+            jp = state.joint_positions
+            rows.append(
+                [run, k, round(t_acc, 6), x, y, z]
+                + [jp[a] for a in ARM_JOINTS]
+            )
+        logger.info(f"[{planner['name']}] run {run} segment {k}: {n} points")
+    return rows
 
-            start = RobotState(robot_model)
-            start.joint_positions = start_j
-            start.update()
-            goal = RobotState(robot_model)
-            goal.joint_positions = goal_j
-            goal.update()
 
-            arm.set_start_state(robot_state=start)
-            arm.set_goal_state(robot_state=goal)
-
-            result = arm.plan(single_plan_parameters=params)
-            if not result:
-                logger.error(f"[{planner['name']}] run {run} segment {k}: planning FAILED")
-                continue
-
-            traj = result.trajectory
-            durations = traj.get_waypoint_durations()
-            n = len(traj)
-            for i in range(n):
-                if i == 0 and k > 0:
-                    continue
-                state = traj[i]
-                x, y, z = tcp_xyz(state)
-                if i > 0:
-                    t_acc += float(durations[i])
-                jp = state.joint_positions
-                rows.append(
-                    [run, k, round(t_acc, 6), x, y, z]
-                    + [jp[a] for a in ARM_JOINTS]
-                )
-            logger.info(f"[{planner['name']}] run {run} segment {k}: {n} points")
+def plan_single(arm, robot_model, start_j, goal_j, params, planner, logger, run=0):
+    """Plan ONE move start->goal once; return CSV rows tagged with `run`."""
+    if same_pose(start_j, goal_j):
+        logger.error(f"[{planner['name']}] grasp == place -- nothing to plan")
+        return []
+    start = RobotState(robot_model)
+    start.joint_positions = start_j
+    start.update()
+    goal = RobotState(robot_model)
+    goal.joint_positions = goal_j
+    goal.update()
+    arm.set_start_state(robot_state=start)
+    arm.set_goal_state(robot_state=goal)
+    result = arm.plan(single_plan_parameters=params)
+    if not result:
+        logger.error(f"[{planner['name']}] run {run}: planning FAILED")
+        return []
+    traj = result.trajectory
+    durations = traj.get_waypoint_durations()
+    rows = []
+    t_acc = 0.0
+    for i in range(len(traj)):
+        state = traj[i]
+        x, y, z = tcp_xyz(state)
+        if i > 0:
+            t_acc += float(durations[i])
+        jp = state.joint_positions
+        rows.append([run, 0, round(t_acc, 6), x, y, z]
+                    + [jp[a] for a in ARM_JOINTS])
+    logger.info(f"[{planner['name']}] run {run}: {len(traj)} points")
     return rows
 
 
@@ -199,29 +241,16 @@ def write_csv(path, rows):
         w.writerows(rows)
 
 
-def update_meta(out_dir, label, source, planner, n_points, obstacle):
-    meta_path = os.path.join(out_dir, "meta.json")
-    if os.path.isfile(meta_path):
-        with open(meta_path) as f:
-            meta = json.load(f)
-    else:
-        meta = {
-            "label": label,
-            "source_recording": source,
-            "created": datetime.datetime.now().isoformat(timespec="seconds"),
-            "planners": {},
-        }
-    meta["obstacle"] = obstacle
-    meta["planners"][planner["name"]] = {
-        "pipeline": planner["pipeline"],
-        "planner_id": planner["planner_id"],
-        "planning_time": planner.get("planning_time"),
-        "runs": RUNS,
-        "points": n_points,
-        "csv": f"tcp_path_{planner['name']}.csv",
-        "logged": datetime.datetime.now().isoformat(timespec="seconds"),
+def write_meta(out_dir, label, source, obstacle, stats):
+    """Write meta.json with per-planner success stats for ALL attempted planners."""
+    meta = {
+        "label": label,
+        "source_recording": source,
+        "created": datetime.datetime.now().isoformat(timespec="seconds"),
+        "obstacle": obstacle,
+        "planners": stats,
     }
-    with open(meta_path, "w") as f:
+    with open(os.path.join(out_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
 
@@ -233,13 +262,22 @@ def parse_args():
                     help="insert the virtual barrier (default)")
     ap.add_argument("--no-obstacle", dest="obstacle", action="store_false",
                     help="plan without the barrier (baseline)")
+    # Defaults tuned for the Festo cell: block the grasp->place line without the
+    # wall touching the table (lin_axis) or the wrist (segment6/7) at the endpoints.
     ap.add_argument("--thickness", type=float, default=0.02, help="wall thickness along travel [m]")
-    ap.add_argument("--width", type=float, default=0.30, help="wall width across travel [m]")
-    ap.add_argument("--clearance", type=float, default=0.05, help="wall top above the line [m]")
-    ap.add_argument("--drop-below", dest="drop_below", type=float, default=0.15,
+    ap.add_argument("--width", type=float, default=0.12, help="wall width across travel [m]")
+    ap.add_argument("--clearance", type=float, default=0.12, help="wall top above the line [m]")
+    ap.add_argument("--drop-below", dest="drop_below", type=float, default=0.02,
                     help="how far the wall reaches below the line [m]")
     ap.add_argument("--between", nargs=2, type=int, default=None, metavar=("GRASP", "PLACE"),
-                    help="waypoint indices to place the barrier between (override auto-detect)")
+                    help="waypoint indices for grasp/place (override auto-detect)")
+    ap.add_argument("--single-move", dest="single_move", action="store_true",
+                    help="plan ONE move grasp->place (clean obstacle comparison) "
+                         "instead of the whole route")
+    ap.add_argument("--runs", type=int, default=1,
+                    help="plan each planner N times (success rate + variability)")
+    ap.add_argument("--planning-time", dest="planning_time", type=float, default=None,
+                    help="override planning time [s] for ALL planners")
     return ap.parse_args()
 
 
@@ -250,6 +288,15 @@ def main():
 
     out_dir = os.path.join(OUTPUT_ROOT, label)
     os.makedirs(out_dir, exist_ok=True)
+
+    # Clear stale outputs for this label first, so a planner that FAILS this
+    # run can't leave an old CSV/meta behind and get mixed into the comparison.
+    for f in os.listdir(out_dir):
+        if f.startswith("tcp_path_") and f.endswith(".csv"):
+            os.remove(os.path.join(out_dir, f))
+    _meta_old = os.path.join(out_dir, "meta.json")
+    if os.path.isfile(_meta_old):
+        os.remove(_meta_old)
 
     rclpy.init()
     logger = get_logger("planner_logger")
@@ -275,9 +322,9 @@ def main():
     robot_model = cobot.get_robot_model()
     arm = cobot.get_planning_component(ARM_GROUP)
 
-    # --- virtual barrier (so the planners actually differ) ----------------
-    obstacle_meta = {"enabled": False}
-    if args.obstacle:
+    # --- grasp / place (needed for the barrier and for --single-move) -----
+    gi = pi = None
+    if args.obstacle or args.single_move:
         if args.between is not None:
             gi, pi = args.between
         else:
@@ -290,61 +337,90 @@ def main():
                 f"{[r.get('gripper') for r in recs]}")
             sys.stdout.flush()
             os._exit(1)
+
+    # --- virtual barrier (so the planners actually differ) ----------------
+    obstacle_meta = {"enabled": False}
+    if args.obstacle:
         g = tcp_of(robot_model, recs[gi]["joints"])
         p = tcp_of(robot_model, recs[pi]["joints"])
-        # The arm travels at the LIFTED height, not at the grasp/place height.
-        # Reference the wall's top to the highest waypoint between grasp and
-        # place (the transport height) so the wall actually blocks the path.
-        transport_z = max(tcp_of(robot_model, recs[i]["joints"])[2]
+        if args.single_move:
+            # One direct move at the grasp/place height -> key the wall to that
+            # height (there is no lift to account for).
+            ref_top = None
+        else:
+            # Whole route lifts before carrying -> key the wall to the highest
+            # waypoint between grasp and place (the transport height).
+            ref_top = max(tcp_of(robot_model, recs[i]["joints"])[2]
                           for i in range(gi, pi + 1))
         pos, quat, dims = add_barrier(
             cobot, g, p, logger,
             thickness=args.thickness, width=args.width,
             clearance=args.clearance, drop_below=args.drop_below,
-            ref_top_z=transport_z)
+            ref_top_z=ref_top)
         logger.info(f"Barrier between waypoint {gi} {np.round(g, 3).tolist()} "
-                    f"and waypoint {pi} {np.round(p, 3).tolist()}; "
-                    f"transport height {transport_z:.3f} m, wall top "
-                    f"{transport_z + args.clearance:.3f} m")
+                    f"and waypoint {pi} {np.round(p, 3).tolist()}")
         obstacle_meta = {
             "enabled": True,
+            "mode": "single_move" if args.single_move else "route",
             "grasp_idx": gi, "place_idx": pi,
             "grasp_xyz": [float(v) for v in g], "place_xyz": [float(v) for v in p],
-            "transport_z": float(transport_z),
             "position": [float(v) for v in pos],
             "dims": [float(v) for v in dims],
             "thickness": args.thickness, "width": args.width,
             "clearance": args.clearance, "drop_below": args.drop_below,
         }
 
-    # run every planner in the list, one after another
+    # run every planner, each `runs` times, one after another
+    runs = max(1, args.runs)
+    stats = {}
     for planner in PLANNERS:
         logger.info("=" * 60)
         logger.info(f"Planner: {planner['name']} "
                     f"(pipeline='{planner['pipeline']}' id='{planner['planner_id']}')")
-        try:
-            params = PlanRequestParameters(cobot, PLAN_CONFIG_NS)
-            params.planning_pipeline = planner["pipeline"]
-            params.planner_id = planner["planner_id"]
-            if planner.get("planning_time") is not None:
-                params.planning_time = float(planner["planning_time"])
+        pt = args.planning_time if args.planning_time is not None else planner.get("planning_time")
+        all_rows = []
+        successes = 0
+        points_per_run = []
+        for run in range(runs):
+            try:
+                params = PlanRequestParameters(cobot, PLAN_CONFIG_NS)
+                params.planning_pipeline = planner["pipeline"]
+                params.planner_id = planner["planner_id"]
+                if pt is not None:
+                    params.planning_time = float(pt)
+                if args.single_move:
+                    rows = plan_single(arm, robot_model, recs[gi]["joints"],
+                                       recs[pi]["joints"], params, planner, logger, run)
+                else:
+                    rows = plan_route(arm, robot_model, recs, params, planner, logger, run)
+            except Exception as e:  # one bad attempt must not kill the rest
+                logger.error(f"[{planner['name']}] run {run} skipped: {e}")
+                rows = []
+            if rows:
+                all_rows.extend(rows)
+                successes += 1
+                points_per_run.append(len(rows))
 
-            rows = plan_route(arm, robot_model, recs, params, planner, logger)
-        except Exception as e:  # one bad planner must not kill the rest
-            logger.error(f"[{planner['name']}] skipped: {e}")
-            continue
+        stats[planner["name"]] = {
+            "pipeline": planner["pipeline"],
+            "planner_id": planner["planner_id"],
+            "planning_time": pt,
+            "attempts": runs,
+            "successes": successes,
+            "success_rate": round(successes / runs, 3),
+            "points_per_run": points_per_run,
+            "csv": f"tcp_path_{planner['name']}.csv" if all_rows else None,
+        }
+        logger.info(f"[{planner['name']}] solved {successes}/{runs}")
+        if all_rows:
+            write_csv(os.path.join(out_dir, f"tcp_path_{planner['name']}.csv"), all_rows)
 
-        if not rows:
-            logger.error(f"[{planner['name']}] produced no points -- no CSV written")
-            continue
-
-        csv_path = os.path.join(out_dir, f"tcp_path_{planner['name']}.csv")
-        write_csv(csv_path, rows)
-        update_meta(out_dir, label, waypoints_path, planner, len(rows), obstacle_meta)
-        logger.info(f"[{planner['name']}] wrote {len(rows)} points to {csv_path}")
-
+    write_meta(out_dir, label, waypoints_path, obstacle_meta, stats)
     logger.info("=" * 60)
     logger.info(f"Done. Results in {out_dir}")
+    logger.info("Success rates:")
+    for name, s in stats.items():
+        logger.info(f"  {name:12s} {s['successes']}/{s['attempts']}")
 
     # Skip MoveItPy/rclpy teardown (it segfaults on MoveItCpp deletion). All
     # files are already written and closed, so a hard exit is safe and clean.
