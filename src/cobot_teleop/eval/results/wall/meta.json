@@ -1,0 +1,139 @@
+{
+  "label": "wall",
+  "source_recording": "/workspace/cobot_recordings/2026-09-24_11-07-11/teach/waypoints.jsonl",
+  "created": "2026-10-30T11:08:13",
+  "obstacle": {
+    "enabled": true,
+    "mode": "single_move",
+    "grasp_idx": 2,
+    "place_idx": 6,
+    "grasp_xyz": [
+      0.5343392870704622,
+      -0.28498989365858896,
+      0.8225586240795294
+    ],
+    "place_xyz": [
+      0.4235696608150568,
+      -0.07322890709691576,
+      0.8222569989129476
+    ],
+    "position": [
+      0.4789544739427595,
+      -0.17910940037775236,
+      0.8724078114962385
+    ],
+    "dims": [
+      0.02,
+      0.12,
+      0.14030162516658184
+    ],
+    "thickness": 0.02,
+    "width": 0.12,
+    "clearance": 0.12,
+    "drop_below": 0.02
+  },
+  "planners": {
+    "rrtconnect": {
+      "pipeline": "ompl",
+      "planner_id": "RRTConnectkConfigDefault",
+      "planning_time": 5.0,
+      "attempts": 10,
+      "successes": 10,
+      "success_rate": 1.0,
+      "points_per_run": [
+        23,
+        34,
+        26,
+        30,
+        35,
+        28,
+        23,
+        23,
+        30,
+        21
+      ],
+      "csv": "tcp_path_rrtconnect.csv"
+    },
+    "rrt": {
+      "pipeline": "ompl",
+      "planner_id": "RRTkConfigDefault",
+      "planning_time": 5.0,
+      "attempts": 10,
+      "successes": 0,
+      "success_rate": 0.0,
+      "points_per_run": [],
+      "csv": null
+    },
+    "rrtstar": {
+      "pipeline": "ompl",
+      "planner_id": "RRTstarkConfigDefault",
+      "planning_time": 5.0,
+      "attempts": 10,
+      "successes": 0,
+      "success_rate": 0.0,
+      "points_per_run": [],
+      "csv": null
+    },
+    "prm": {
+      "pipeline": "ompl",
+      "planner_id": "PRMkConfigDefault",
+      "planning_time": 5.0,
+      "attempts": 10,
+      "successes": 9,
+      "success_rate": 0.9,
+      "points_per_run": [
+        23,
+        35,
+        34,
+        36,
+        39,
+        15,
+        30,
+        27,
+        40
+      ],
+      "csv": "tcp_path_prm.csv"
+    },
+    "chomp": {
+      "pipeline": "chomp",
+      "planner_id": "",
+      "planning_time": null,
+      "attempts": 10,
+      "successes": 0,
+      "success_rate": 0.0,
+      "points_per_run": [],
+      "csv": null
+    },
+    "stomp": {
+      "pipeline": "stomp",
+      "planner_id": "",
+      "planning_time": null,
+      "attempts": 10,
+      "successes": 10,
+      "success_rate": 1.0,
+      "points_per_run": [
+        15,
+        14,
+        13,
+        15,
+        14,
+        13,
+        15,
+        15,
+        13,
+        14
+      ],
+      "csv": "tcp_path_stomp.csv"
+    },
+    "pilz_ptp": {
+      "pipeline": "pilz_industrial_motion_planner",
+      "planner_id": "PTP",
+      "planning_time": null,
+      "attempts": 10,
+      "successes": 0,
+      "success_rate": 0.0,
+      "points_per_run": [],
+      "csv": null
+    }
+  }
+}

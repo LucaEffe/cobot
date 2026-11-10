@@ -1,0 +1,70 @@
+{
+  "label": "pickplace",
+  "source_recording": "/workspace/cobot_recordings/2026-09-24_11-07-11/teach/waypoints.jsonl",
+  "created": "2026-10-28T14:55:28",
+  "planners": {
+    "rrtconnect": {
+      "pipeline": "ompl",
+      "planner_id": "RRTConnectkConfigDefault",
+      "planning_time": null,
+      "runs": 1,
+      "points": 60,
+      "csv": "tcp_path_rrtconnect.csv",
+      "logged": "2026-10-29T13:30:01"
+    },
+    "rrt": {
+      "pipeline": "ompl",
+      "planner_id": "RRTkConfigDefault",
+      "planning_time": null,
+      "runs": 1,
+      "points": 60,
+      "csv": "tcp_path_rrt.csv",
+      "logged": "2026-10-29T13:30:01"
+    },
+    "rrtstar": {
+      "pipeline": "ompl",
+      "planner_id": "RRTstarkConfigDefault",
+      "planning_time": 2.0,
+      "runs": 1,
+      "points": 60,
+      "csv": "tcp_path_rrtstar.csv",
+      "logged": "2026-10-29T13:30:15"
+    },
+    "prm": {
+      "pipeline": "ompl",
+      "planner_id": "PRMkConfigDefault",
+      "planning_time": null,
+      "runs": 1,
+      "points": 60,
+      "csv": "tcp_path_prm.csv",
+      "logged": "2026-10-29T13:30:15"
+    },
+    "chomp": {
+      "pipeline": "chomp",
+      "planner_id": "",
+      "planning_time": null,
+      "runs": 1,
+      "points": 60,
+      "csv": "tcp_path_chomp.csv",
+      "logged": "2026-10-29T13:30:18"
+    },
+    "stomp": {
+      "pipeline": "stomp",
+      "planner_id": "",
+      "planning_time": null,
+      "runs": 1,
+      "points": 64,
+      "csv": "tcp_path_stomp.csv",
+      "logged": "2026-10-29T13:30:18"
+    },
+    "pilz_ptp": {
+      "pipeline": "pilz_industrial_motion_planner",
+      "planner_id": "PTP",
+      "planning_time": null,
+      "runs": 1,
+      "points": 60,
+      "csv": "tcp_path_pilz_ptp.csv",
+      "logged": "2026-10-29T13:30:18"
+    }
+  }
+}

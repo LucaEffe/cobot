@@ -79,8 +79,8 @@ BAG_TOPICS = [
     "/tf_static",
     "/dynamic_joint_states",
     "/arm_group_controller/controller_state",
-    "/camera/camera/color/image_raw",
-    "/camera/camera/depth/color/points",
+    "/camera/camera/color/image_raw",        # Top-Kamera Farbe
+    "/gripper/cam/color/image_raw",          # Greiferkamera Farbe (NEU)
 ]
 
 # Motion only (no cameras): enough for the planner comparison / tracking-error

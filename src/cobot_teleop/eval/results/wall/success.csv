@@ -1,0 +1,8 @@
+planner,attempts,successes,success_rate
+rrtconnect,10,10,1.0
+rrt,10,0,0.0
+rrtstar,10,0,0.0
+prm,10,9,0.9
+chomp,10,0,0.0
+stomp,10,10,1.0
+pilz_ptp,10,0,0.0

@@ -1,0 +1,4 @@
+planner,n_segments,points,duration_s,tcp_path_len_m,detour_ratio,dev_mean_m,dev_max_m,jerk_rms,joint_travel_rad,lift_travel_m
+prm,1,21,1.9828,0.89358,3.7391,0.20313,0.42326,7.2356,2.65001,0.20466
+rrtconnect,1,24,2.2401,0.77985,3.2632,0.17292,0.35943,4.8673,3.45084,0.03814
+stomp,1,13,1.161,0.55069,2.2961,0.09779,0.23913,14.0724,1.12831,0.2451
